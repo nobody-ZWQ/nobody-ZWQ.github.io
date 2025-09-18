@@ -1,0 +1,2467 @@
+<!DOCTYPE html>
+<html data-color-mode="light" data-dark-theme="dark" data-light-theme="light" lang="zh-CN">
+<head>
+    <meta content="text/html; charset=utf-8" http-equiv="content-type" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <link href='https://mirrors.sustech.edu.cn/cdnjs/ajax/libs/Primer/21.0.7/primer.css' rel='stylesheet' />
+    
+    <link rel="icon" href="https://github.githubassets.com/favicons/favicon.svg"><script>
+        let theme = localStorage.getItem("meek_theme") || "light";
+        document.documentElement.setAttribute("data-color-mode", theme);
+    </script>
+<meta name="description" content="## 1、起初在cli.c调用
+
+```
+|-->auto_net_upgrade(u-boot/common/autoboot.c)
+|-->run_command_list(u-boot/common/cli.c)
+    |-->parse_string_outer(u-boot/common/cli_hush.c)
+        |-->setup_string_in_str(u-boot/common/cli_hush.c)
+        |-->parse_stream_outer(u-boot/common/cli_hush.c)
+            |-->initialize_context(u-boot/common/cli_hush.c)
+            |-->update_ifs_map(u-boot/common/cli_hush.c)
+            |-->parse_stream(u-boot/common/cli_hush.c)
+            |-->run_list(u-boot/common/cli_hush.c)
+                |-->run_list_real(u-boot/common/cli_hush.c)
+                    |-->make_list_in(u-boot/common/cli_hush.c)
+                    |-->run_pipe_real(u-boot/common/cli_hush.c)
+                        |-->cmd_process(u-boot/common/command.c)
+                            |-->find_cmd(u-boot/common/command.c)
+                            |-->cmd_call(u-boot/common/command.c)
+                                |-->do_bootz(u-boot/common/cmd_bootm.c)
+                                    |-->
+                |-->free_pipe_list(u-boot/common/cli_hush.c)
+```
+
+## 2、进入cli_hush.c中的parse_string_outer
+
+### parse_string_outer函数定义
+
+```
+int parse_string_outer(const char *s, int flag)
+{
+    struct in_str input;
+    char *p = NULL;
+    int rcode;
+    if (!s)
+        return 1;
+    if (!*s)
+        return 0;
+    if (!(p = strchr(s, '\n')) || *++p) {
+        p = xmalloc(strlen(s) + 2);
+        strcpy(p, s);
+        strcat(p, '\n');
+        setup_string_in_str(&input, p);
+        rcode = parse_stream_outer(&input, flag);
+        free(p);
+        return rcode;
+    } else {
+    setup_string_in_str(&input, s);
+    return parse_stream_outer(&input, flag);
+    }
+}
+```
+
+### parse_stream_outer函数定义
+
+```
+static int parse_stream_outer(struct in_str *inp, int flag)
+{
+    struct p_context ctx;
+    o_string temp=NULL_O_STRING;
+    int rcode;
+    int code = 1;
+    do {
+        ctx.type = flag;
+        initialize_context(&ctx);
+        update_ifs_map();
+        if (!(flag & FLAG_PARSE_SEMICOLON) || (flag & FLAG_REPARSING)) mapset((uchar *)';$&|', 0);
+        inp->promptmode=1;
+        rcode = parse_stream(&temp, &ctx, inp,
+                     flag & FLAG_CONT_ON_NEWLINE ? -1 : '\n');
+        if (rcode == 1) flag_repeat = 0;
+        if (rcode != 1 && ctx.old_flag != 0) {
+            syntax();
+            flag_repeat = 0;
+        }
+        if (rcode != 1 && ctx.old_flag == 0) {
+            done_word(&temp, &ctx);
+            done_pipe(&ctx,PIPE_SEQ);
+            code = run_list(ctx.list_head);
+            if (code == -2) {   /* exit */
+                b_free(&temp);
+                code = 0;
+                /* XXX hackish way to not allow exit from main loop */
+                if (inp->peek == file_peek) {
+                    printf('exit not allowed from main input shell.\n');
+                    continue;
+                }
+                break;
+            }
+            if (code == -1)
+                flag_repeat = 0;
+        } else {
+            if (ctx.old_flag != 0) {
+                free(ctx.stack);
+                b_reset(&temp);
+            }
+            if (inp->__promptme == 0) printf('<INTERRUPT>\n');
+            inp->__promptme = 1;
+            temp.nonnull = 0;
+            temp.quote = 0;
+            inp->p = NULL;
+            free_pipe_list(ctx.list_head,0);
+        }
+        b_free(&temp);
+    /* loop on syntax errors, return on EOF */
+    } while (rcode != -1 && !(flag & FLAG_EXIT_FROM_LOOP) &&
+        (inp->peek != static_peek || b_peek(inp)));
+    return (code != 0) ? 1 : 0;
+}
+```
+
+
+
+### run_list_real函数定义
+
+```
+static int run_list_real(struct pipe *pi)
+{
+    char *save_name = NULL;
+    char **list = NULL;
+    char **save_list = NULL;
+    struct pipe *rpipe;
+    int flag_rep = 0;
+    int rcode=0, flag_skip=1;
+    int flag_restore = 0;
+    int if_code=0, next_if_code=0;  /* need double-buffer to handle elif */
+    reserved_style rmode, skip_more_in_this_rmode=RES_XXXX;
+    /* check syntax for 'for' */
+    for (rpipe = pi; rpipe; rpipe = rpipe->next) {
+        if ((rpipe->r_mode == RES_IN ||
+            rpipe->r_mode == RES_FOR) &&
+            (rpipe->next == NULL)) {
+                syntax();
+#ifdef __U_BOOT__
+                flag_repeat = 0;
+#endif
+                return 1;
+        }
+        if ((rpipe->r_mode == RES_IN &&
+            (rpipe->next->r_mode == RES_IN &&
+            rpipe->next->progs->argv != NULL))||
+            (rpipe->r_mode == RES_FOR &&
+            rpipe->next->r_mode != RES_IN)) {
+                syntax();
+#ifdef __U_BOOT__
+                flag_repeat = 0;
+#endif
+                return 1;
+        }
+    }
+    for (; pi; pi = (flag_restore != 0) ? rpipe : pi->next) {
+        if (pi->r_mode == RES_WHILE || pi->r_mode == RES_UNTIL ||
+            pi->r_mode == RES_FOR) {
+#ifdef __U_BOOT__
+                /* check Ctrl-C */
+                ctrlc();
+                if ((had_ctrlc())) {
+                    return 1;
+                }
+#endif
+                flag_restore = 0;
+                if (!rpipe) {
+                    flag_rep = 0;
+                    rpipe = pi;
+                }
+        }
+        rmode = pi->r_mode;
+        debug_printf('rmode=%d  if_code=%d  next_if_code=%d skip_more=%d\n', rmode, if_code, next_if_code, skip_more_in_this_rmode);
+        if (rmode == skip_more_in_this_rmode && flag_skip) {
+            if (pi->followup == PIPE_SEQ) flag_skip=0;
+            continue;
+        }
+        flag_skip = 1;
+        skip_more_in_this_rmode = RES_XXXX;
+        if (rmode == RES_THEN || rmode == RES_ELSE) if_code = next_if_code;
+        if (rmode == RES_THEN &&  if_code) continue;
+        if (rmode == RES_ELSE && !if_code) continue;
+        if (rmode == RES_ELIF && !if_code) break;
+        if (rmode == RES_FOR && pi->num_progs) {
+            if (!list) {
+                /* if no variable values after 'in' we skip 'for' */
+                if (!pi->next->progs->argv) continue;
+                /* create list of variable values */
+                list = make_list_in(pi->next->progs->argv,
+                    pi->progs->argv[0]);
+                save_list = list;
+                save_name = pi->progs->argv[0];
+                pi->progs->argv[0] = NULL;
+                flag_rep = 1;
+            }
+            if (!(*list)) {
+                free(pi->progs->argv[0]);
+                free(save_list);
+                list = NULL;
+                flag_rep = 0;
+                pi->progs->argv[0] = save_name;
+                continue;
+            } else {
+                /* insert new value from list for variable */
+                if (pi->progs->argv[0])
+                    free(pi->progs->argv[0]);
+                pi->progs->argv[0] = *list++;
+            }
+        }
+        if (rmode == RES_IN) continue;
+        if (rmode == RES_DO) {
+            if (!flag_rep) continue;
+        }
+        if (rmode == RES_DONE) {
+            if (flag_rep) {
+                flag_restore = 1;
+            } else {
+                rpipe = NULL;
+            }
+        }
+        if (pi->num_progs == 0) continue;
+        rcode = run_pipe_real(pi);
+        debug_printf('run_pipe_real returned %d\n',rcode);
+        if (rcode < -1) {
+            last_return_code = -rcode - 2;
+            return -2;  /* exit */
+        }
+        last_return_code=(rcode == 0) ? 0 : 1;
+        if ( rmode == RES_IF || rmode == RES_ELIF )
+            next_if_code=rcode;  /* can be overwritten a number of times */
+        if (rmode == RES_WHILE)
+            flag_rep = !last_return_code;
+        if (rmode == RES_UNTIL)
+            flag_rep = last_return_code;
+        if ( (rcode==EXIT_SUCCESS && pi->followup==PIPE_OR) ||
+             (rcode!=EXIT_SUCCESS && pi->followup==PIPE_AND) )
+            skip_more_in_this_rmode=rmode;
+    }
+    return rcode;
+}
+```
+
+
+
+### run_pipe_real函数实际运行部分：
+
+```
+static int run_pipe_real(struct pipe *pi)
+{
+    int i;
+    int nextin;
+    int flag = do_repeat ? CMD_FLAG_REPEAT : 0;
+    struct child_prog *child;
+    char *p;
+    nextin = 0;
+    if (pi->num_progs == 1) child = & (pi->progs[0]);
+     
+    if (pi->num_progs == 1 && pi->progs[0].argv != NULL) {
+        for (i=0; is_assignment(child->argv[i]); i++) { /* nothing */ }
+        for (i = 0; is_assignment(child->argv[i]); i++) {
+            p = insert_var_value(child->argv[i]);
+            set_local_var(p, 0);
+            if (p != child->argv[i]) {
+                child->sp--;
+                free(p);
+            }
+        }
+        /* Process the command */
+        return cmd_process(flag, child->argc, child->argv,
+                   &flag_repeat, NULL);
+    }
+}
+```
+
+## 3、进入到command.c中的cmd_process
+
+### cmd_process 函数实际运行部分
+
+```
+enum command_ret_t cmd_process(int flag, int argc, char * const argv[],
+                   int *repeatable, ulong *ticks)
+{
+    enum command_ret_t rc = CMD_RET_SUCCESS;
+    cmd_tbl_t *cmdtp;
+    /* Look up command in command table */
+    cmdtp = find_cmd(argv[0]);                  //初始的cmd也就是argv[0]在经过find_cmd函数后将得到cmd相关的函数；其过程暂不清楚
+                                                //例：此处的argv[0]是booz，经过find_cmd后得到cmdtp->cmd为do_bootz
+    /* found - check max args */
+    if (argc > cmdtp->maxargs)
+        rc = CMD_RET_USAGE;
+    /* avoid 'bootd' recursion */
+    if (cmdtp->cmd == do_bootd) {
+        if (flag & CMD_FLAG_BOOTD) {
+            puts(''bootd' recursion detected\n');
+            rc = CMD_RET_FAILURE;
+        } else {
+            flag |= CMD_FLAG_BOOTD;
+        }
+    }
+    /* If OK so far, then do the command */
+    if (!rc) {
+        if (ticks)
+            *ticks = get_timer(0);
+        rc = cmd_call(cmdtp, flag, argc, argv); //cmd相关的函数do_bootz是在此函数中执行的
+        if (ticks)
+            *ticks = get_timer(*ticks);
+        *repeatable &= cmdtp->repeatable;
+    }
+    if (rc == CMD_RET_USAGE)
+        rc = cmd_usage(cmdtp);
+    return rc;
+}
+```
+
+### find_cmd函数实际执行：
+
+```
+#define ll_entry_start(_type, _list)                    \
+({                                  \
+    static char start[0] __aligned(4) __attribute__((unused,    \
+        section('.u_boot_list_2_'#_list'_1')));         \
+    (_type *)&start;                        \
+})
+ 
+#define ll_entry_end(_type, _list)                  \
+({                                  \
+    static char end[0] __aligned(4) __attribute__((unused,  \
+        section('.u_boot_list_2_'#_list'_3')));         \
+    (_type *)&end;                          \
+})
+ 
+#define ll_entry_count(_type, _list)                    \
+    ({                              \
+        _type *start = ll_entry_start(_type, _list);        \
+        _type *end = ll_entry_end(_type, _list);        \
+        unsigned int _ll_result = end - start;          \
+        _ll_result;                     \
+    })
+ 
+cmd_tbl_t *find_cmd_tbl(const char *cmd, cmd_tbl_t *table, int table_len)
+{
+    cmd_tbl_t *cmdtp;
+    cmd_tbl_t *cmdtp_temp = table;  /* Init value */
+    const char *p;
+    int len;
+    int n_found = 0;
+    if (!cmd)
+        return NULL;
+    /*
+     * Some commands allow length modifiers (like 'cp.b');
+     * compare command name only until first dot.
+     */
+    len = ((p = strchr(cmd, '.')) == NULL) ? strlen (cmd) : (p - cmd);
+    for (cmdtp = table; cmdtp != table + table_len; cmdtp++) {
+        if (strncmp(cmd, cmdtp->name, len) == 0) {
+            if (len == strlen(cmdtp->name))
+                return cmdtp;   /* full match */
+            cmdtp_temp = cmdtp; /* abbreviated command ? */
+            n_found++;
+        }
+    }
+    if (n_found == 1) {         /* exactly one match */
+        return cmdtp_temp;
+    }
+    return NULL;    /* not found or ambiguous command */
+}
+ 
+cmd_tbl_t *find_cmd(const char *cmd)
+{
+    cmd_tbl_t *start = ll_entry_start(cmd_tbl_t, cmd);
+    const int len = ll_entry_count(cmd_tbl_t, cmd);
+    return find_cmd_tbl(cmd, start, len);
+}
+```
+
+### cmd_call函数实际执行：
+
+```
+static int cmd_call(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+{
+    int result;
+    result = (cmdtp->cmd)(cmdtp, flag, argc, argv);      //do_bootz函数在此调用执行
+    if (result)
+        debug('Command failed, result=%d', result);
+    return result;
+}
+```
+
+## 4、进入到cmd_bootm函数中的do_bootz
+
+### do_bootz函数实际执行：
+
+```
+int do_bootz(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+{
+    int ret;
+    /* Consume 'bootz' 此时的argc是4，表示4个参数，同时argv[0]是bootz*/  
+    argc--; argv++;     //此时argc是3，还有3个参数，同时argv[0]是bootz引导内核的地址0x2080000
+    if (bootz_start(cmdtp, flag, argc, argv, &images))          //images当前还只是个空的结构体实例
+        return 1;
+    /*
+     * We are doing the BOOTM_STATE_LOADOS state ourselves, so must
+     * disable interrupts ourselves
+     */
+    bootm_disable_interrupts();
+    images.os.os = IH_OS_LINUX;
+    ret = do_bootm_states(cmdtp, flag, argc, argv,
+                  BOOTM_STATE_OS_PREP | BOOTM_STATE_OS_FAKE_GO |
+                  BOOTM_STATE_OS_GO,
+                  &images, 1);
+    return ret;
+}
+```
+
+### 1、bootz_start函数实际执行：
+
+```
+static int bootz_start(cmd_tbl_t *cmdtp, int flag, int argc,
+            char * const argv[], bootm_headers_t *images)
+{
+    int ret;
+    ulong zi_start, zi_end;
+    ret = do_bootm_states(cmdtp, flag, argc, argv, BOOTM_STATE_START,
+                  images, 1);
+    /* Setup Linux kernel zImage entry point */
+    if (!argc) {
+        images->ep = load_addr;
+        debug('*  kernel: default image load address = 0x%08lx\n',
+                load_addr);
+    } else {
+        images->ep = simple_strtoul(argv[0], NULL, 16);
+        debug('*  kernel: cmdline image address = 0x%08lx\n',
+            images->ep);
+    }
+    printf('images-ep %x\n', images->ep);
+    ret = bootz_setup(images->ep, &zi_start, &zi_end);
+    if (ret != 0)
+        return 1;
+    lmb_reserve(&images->lmb, images->ep, zi_end - zi_start);
+    /*
+     * Handle the BOOTM_STATE_FINDOTHER state ourselves as we do not
+     * have a header that provide this informaiton.
+     */
+    if (bootm_find_ramdisk_fdt(flag, argc, argv))
+        return 1;
+    return 0;
+}
+```
+
+### do_bootm_states函数定义
+
+```
+ int do_bootm_states(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
+            int states, bootm_headers_t *images, int boot_progress)
+{
+    boot_os_fn *boot_fn;
+    ulong iflag = 0;
+    int ret = 0, need_boot_fn;
+    images->state |= states;
+    /*
+     * Work through the states and see how far we get. We stop on
+     * any error.
+     */
+    if (states & BOOTM_STATE_START)                     //states=1,ret=0;BOOTM_STATE_START=(0x00000001);
+        ret = bootm_start(cmdtp, flag, argc, argv);     //在本函数中唯二需要正常执行的函数之一
+    if (!ret && (states & BOOTM_STATE_FINDOS))          //states=1,ret=0;BOOTM_STATE_FINDOS=(0x00000002);
+        ret = bootm_find_os(cmdtp, flag, argc, argv);  
+    if (!ret && (states & BOOTM_STATE_FINDOTHER)) {     //states=1,ret=0;BOOTM_STATE_FINDOTHER=(0x00000004);
+        ret = bootm_find_other(cmdtp, flag, argc, argv);
+        argc = 0;   /* consume the args */
+    }
+    /* From now on, we need the OS boot function */     //此时states=1,ret=0;
+    if (ret)
+        return ret;
+    boot_fn = bootm_os_get_boot_func(images->os.os); //在本函数中唯二需要正常执行的函数之一
+    need_boot_fn = states & (BOOTM_STATE_OS_CMDLINE |
+            BOOTM_STATE_OS_BD_T | BOOTM_STATE_OS_PREP |
+            BOOTM_STATE_OS_FAKE_GO | BOOTM_STATE_OS_GO);        //这部分的宏0x00000 7E 0
+    /* Call various other states that are not generally used */ //此时boot_fn = NULL,need_boot_fn = 0x700
+    if (!ret && (states & BOOTM_STATE_OS_CMDLINE))              //states=1,ret=0;BOOTM_STATE_OS_CMDLINE=(0x00000040);
+        ret = boot_fn(BOOTM_STATE_OS_CMDLINE, argc, argv, images);
+    if (!ret && (states & BOOTM_STATE_OS_BD_T))                 //states=1,ret=0;BOOTM_STATE_OS_BD_T=(0x00000080);
+        ret = boot_fn(BOOTM_STATE_OS_BD_T, argc, argv, images);
+    if (!ret && (states & BOOTM_STATE_OS_PREP))                 //states=1,ret=0;BOOTM_STATE_OS_PREP=(0x00000100);
+        ret = boot_fn(BOOTM_STATE_OS_PREP, argc, argv, images);
+    /* Check for unsupported subcommand. */
+    if (ret) {
+        puts('subcommand not supported\n');
+        return ret;
+    }
+    /* Now run the OS! We hope this doesn't return */
+    if (!ret && (states & BOOTM_STATE_OS_GO))                   //ret =0;states =1;BOOTM_STATE_OS_GO=0x00000400;
+        ret = boot_selected_os(argc, argv, BOOTM_STATE_OS_GO,
+                images, boot_fn);
+    /* Deal with any fallout */
+err:
+    if (iflag)                                          //iflag= 0;ret =0;
+        enable_interrupts();
+    if (ret == BOOTM_ERR_UNIMPLEMENTED)
+        bootstage_error(BOOTSTAGE_ID_DECOMP_UNIMPL);
+    else if (ret == BOOTM_ERR_RESET)
+        do_reset(cmdtp, flag, argc, argv);
+    return ret;
+}
+```
+
+#### bootm_start函数定义实际执行：
+
+```
+static int bootm_start(cmd_tbl_t *cmdtp, int flag, int argc,
+               char * const argv[])
+{
+    memset((void *)&images, 0, sizeof(images));
+    images.verify = getenv_yesno('verify');       //从环境变量中获取verify的值
+    boot_start_lmb(&images);
+    bootstage_mark_name(BOOTSTAGE_ID_BOOTM_START, 'bootm_start');
+    images.state = BOOTM_STATE_START;
+    return 0;
+}
+```
+
+#### 1、getenv_yesno函数定义 实际执行：
+
+```
+char *getenv(const char *name)
+{
+    if (gd->flags & GD_FLG_ENV_READY) { /* after import into hashtable */
+        ENTRY e, *ep;
+        WATCHDOG_RESET();
+        e.key   = name;                         //将需要查找的变量转为ENTRY结构体变量的键值
+        e.data  = NULL;
+        hsearch_r(e, FIND, &ep, &env_htab, 0);
+        return ep ? ep->data : NULL;
+    }
+    /* restricted capabilities before import */
+    if (getenv_f(name, (char *)(gd->env_buf), sizeof(gd->env_buf)) > 0)
+        return (char *)(gd->env_buf);
+    return NULL;
+}
+int getenv_yesno(const char *var)
+{
+    char *s = getenv(var);
+    if (s == NULL)
+        return -1;
+    return (*s == '1' || *s == 'y' || *s == 'Y' || *s == 't' || *s == 'T') ?
+        1 : 0;
+}
+```
+
+getenv函数定义：
+
+本函数涉及到env变量的相关修改，实际解析暂未完成，仅仅初步完成hsearch_r函数的理解（），getenc_f函数的理解分析暂未完成因为好像很多地方均有相关的调用导致打印信息比较杂不好确定
+
+hsearch_r函数定义
+
+```
+int hsearch_r(ENTRY item, ACTION action, ENTRY ** retval,
+          struct hsearch_data *htab, int flag)
+{
+    unsigned int hval;
+    unsigned int count;
+    unsigned int len = strlen(item.key);
+    unsigned int idx;
+    unsigned int first_deleted = 0;
+    int ret;
+    /* Compute an value for the given string. Perhaps use a better method. */
+    hval = len;
+    count = len;
+    //hash表键值生成算法:
+    //将item.key---环境变量name中的字符移位并累加，然后模hash表项数，即为该环境变量在hash表项中的数组索引---hash表键值。">
+<meta property="og:title" content="u-boot启动流程之 abortboot未按下ctrl+u">
+<meta property="og:description" content="## 1、起初在cli.c调用
+
+```
+|-->auto_net_upgrade(u-boot/common/autoboot.c)
+|-->run_command_list(u-boot/common/cli.c)
+    |-->parse_string_outer(u-boot/common/cli_hush.c)
+        |-->setup_string_in_str(u-boot/common/cli_hush.c)
+        |-->parse_stream_outer(u-boot/common/cli_hush.c)
+            |-->initialize_context(u-boot/common/cli_hush.c)
+            |-->update_ifs_map(u-boot/common/cli_hush.c)
+            |-->parse_stream(u-boot/common/cli_hush.c)
+            |-->run_list(u-boot/common/cli_hush.c)
+                |-->run_list_real(u-boot/common/cli_hush.c)
+                    |-->make_list_in(u-boot/common/cli_hush.c)
+                    |-->run_pipe_real(u-boot/common/cli_hush.c)
+                        |-->cmd_process(u-boot/common/command.c)
+                            |-->find_cmd(u-boot/common/command.c)
+                            |-->cmd_call(u-boot/common/command.c)
+                                |-->do_bootz(u-boot/common/cmd_bootm.c)
+                                    |-->
+                |-->free_pipe_list(u-boot/common/cli_hush.c)
+```
+
+## 2、进入cli_hush.c中的parse_string_outer
+
+### parse_string_outer函数定义
+
+```
+int parse_string_outer(const char *s, int flag)
+{
+    struct in_str input;
+    char *p = NULL;
+    int rcode;
+    if (!s)
+        return 1;
+    if (!*s)
+        return 0;
+    if (!(p = strchr(s, '\n')) || *++p) {
+        p = xmalloc(strlen(s) + 2);
+        strcpy(p, s);
+        strcat(p, '\n');
+        setup_string_in_str(&input, p);
+        rcode = parse_stream_outer(&input, flag);
+        free(p);
+        return rcode;
+    } else {
+    setup_string_in_str(&input, s);
+    return parse_stream_outer(&input, flag);
+    }
+}
+```
+
+### parse_stream_outer函数定义
+
+```
+static int parse_stream_outer(struct in_str *inp, int flag)
+{
+    struct p_context ctx;
+    o_string temp=NULL_O_STRING;
+    int rcode;
+    int code = 1;
+    do {
+        ctx.type = flag;
+        initialize_context(&ctx);
+        update_ifs_map();
+        if (!(flag & FLAG_PARSE_SEMICOLON) || (flag & FLAG_REPARSING)) mapset((uchar *)';$&|', 0);
+        inp->promptmode=1;
+        rcode = parse_stream(&temp, &ctx, inp,
+                     flag & FLAG_CONT_ON_NEWLINE ? -1 : '\n');
+        if (rcode == 1) flag_repeat = 0;
+        if (rcode != 1 && ctx.old_flag != 0) {
+            syntax();
+            flag_repeat = 0;
+        }
+        if (rcode != 1 && ctx.old_flag == 0) {
+            done_word(&temp, &ctx);
+            done_pipe(&ctx,PIPE_SEQ);
+            code = run_list(ctx.list_head);
+            if (code == -2) {   /* exit */
+                b_free(&temp);
+                code = 0;
+                /* XXX hackish way to not allow exit from main loop */
+                if (inp->peek == file_peek) {
+                    printf('exit not allowed from main input shell.\n');
+                    continue;
+                }
+                break;
+            }
+            if (code == -1)
+                flag_repeat = 0;
+        } else {
+            if (ctx.old_flag != 0) {
+                free(ctx.stack);
+                b_reset(&temp);
+            }
+            if (inp->__promptme == 0) printf('<INTERRUPT>\n');
+            inp->__promptme = 1;
+            temp.nonnull = 0;
+            temp.quote = 0;
+            inp->p = NULL;
+            free_pipe_list(ctx.list_head,0);
+        }
+        b_free(&temp);
+    /* loop on syntax errors, return on EOF */
+    } while (rcode != -1 && !(flag & FLAG_EXIT_FROM_LOOP) &&
+        (inp->peek != static_peek || b_peek(inp)));
+    return (code != 0) ? 1 : 0;
+}
+```
+
+
+
+### run_list_real函数定义
+
+```
+static int run_list_real(struct pipe *pi)
+{
+    char *save_name = NULL;
+    char **list = NULL;
+    char **save_list = NULL;
+    struct pipe *rpipe;
+    int flag_rep = 0;
+    int rcode=0, flag_skip=1;
+    int flag_restore = 0;
+    int if_code=0, next_if_code=0;  /* need double-buffer to handle elif */
+    reserved_style rmode, skip_more_in_this_rmode=RES_XXXX;
+    /* check syntax for 'for' */
+    for (rpipe = pi; rpipe; rpipe = rpipe->next) {
+        if ((rpipe->r_mode == RES_IN ||
+            rpipe->r_mode == RES_FOR) &&
+            (rpipe->next == NULL)) {
+                syntax();
+#ifdef __U_BOOT__
+                flag_repeat = 0;
+#endif
+                return 1;
+        }
+        if ((rpipe->r_mode == RES_IN &&
+            (rpipe->next->r_mode == RES_IN &&
+            rpipe->next->progs->argv != NULL))||
+            (rpipe->r_mode == RES_FOR &&
+            rpipe->next->r_mode != RES_IN)) {
+                syntax();
+#ifdef __U_BOOT__
+                flag_repeat = 0;
+#endif
+                return 1;
+        }
+    }
+    for (; pi; pi = (flag_restore != 0) ? rpipe : pi->next) {
+        if (pi->r_mode == RES_WHILE || pi->r_mode == RES_UNTIL ||
+            pi->r_mode == RES_FOR) {
+#ifdef __U_BOOT__
+                /* check Ctrl-C */
+                ctrlc();
+                if ((had_ctrlc())) {
+                    return 1;
+                }
+#endif
+                flag_restore = 0;
+                if (!rpipe) {
+                    flag_rep = 0;
+                    rpipe = pi;
+                }
+        }
+        rmode = pi->r_mode;
+        debug_printf('rmode=%d  if_code=%d  next_if_code=%d skip_more=%d\n', rmode, if_code, next_if_code, skip_more_in_this_rmode);
+        if (rmode == skip_more_in_this_rmode && flag_skip) {
+            if (pi->followup == PIPE_SEQ) flag_skip=0;
+            continue;
+        }
+        flag_skip = 1;
+        skip_more_in_this_rmode = RES_XXXX;
+        if (rmode == RES_THEN || rmode == RES_ELSE) if_code = next_if_code;
+        if (rmode == RES_THEN &&  if_code) continue;
+        if (rmode == RES_ELSE && !if_code) continue;
+        if (rmode == RES_ELIF && !if_code) break;
+        if (rmode == RES_FOR && pi->num_progs) {
+            if (!list) {
+                /* if no variable values after 'in' we skip 'for' */
+                if (!pi->next->progs->argv) continue;
+                /* create list of variable values */
+                list = make_list_in(pi->next->progs->argv,
+                    pi->progs->argv[0]);
+                save_list = list;
+                save_name = pi->progs->argv[0];
+                pi->progs->argv[0] = NULL;
+                flag_rep = 1;
+            }
+            if (!(*list)) {
+                free(pi->progs->argv[0]);
+                free(save_list);
+                list = NULL;
+                flag_rep = 0;
+                pi->progs->argv[0] = save_name;
+                continue;
+            } else {
+                /* insert new value from list for variable */
+                if (pi->progs->argv[0])
+                    free(pi->progs->argv[0]);
+                pi->progs->argv[0] = *list++;
+            }
+        }
+        if (rmode == RES_IN) continue;
+        if (rmode == RES_DO) {
+            if (!flag_rep) continue;
+        }
+        if (rmode == RES_DONE) {
+            if (flag_rep) {
+                flag_restore = 1;
+            } else {
+                rpipe = NULL;
+            }
+        }
+        if (pi->num_progs == 0) continue;
+        rcode = run_pipe_real(pi);
+        debug_printf('run_pipe_real returned %d\n',rcode);
+        if (rcode < -1) {
+            last_return_code = -rcode - 2;
+            return -2;  /* exit */
+        }
+        last_return_code=(rcode == 0) ? 0 : 1;
+        if ( rmode == RES_IF || rmode == RES_ELIF )
+            next_if_code=rcode;  /* can be overwritten a number of times */
+        if (rmode == RES_WHILE)
+            flag_rep = !last_return_code;
+        if (rmode == RES_UNTIL)
+            flag_rep = last_return_code;
+        if ( (rcode==EXIT_SUCCESS && pi->followup==PIPE_OR) ||
+             (rcode!=EXIT_SUCCESS && pi->followup==PIPE_AND) )
+            skip_more_in_this_rmode=rmode;
+    }
+    return rcode;
+}
+```
+
+
+
+### run_pipe_real函数实际运行部分：
+
+```
+static int run_pipe_real(struct pipe *pi)
+{
+    int i;
+    int nextin;
+    int flag = do_repeat ? CMD_FLAG_REPEAT : 0;
+    struct child_prog *child;
+    char *p;
+    nextin = 0;
+    if (pi->num_progs == 1) child = & (pi->progs[0]);
+     
+    if (pi->num_progs == 1 && pi->progs[0].argv != NULL) {
+        for (i=0; is_assignment(child->argv[i]); i++) { /* nothing */ }
+        for (i = 0; is_assignment(child->argv[i]); i++) {
+            p = insert_var_value(child->argv[i]);
+            set_local_var(p, 0);
+            if (p != child->argv[i]) {
+                child->sp--;
+                free(p);
+            }
+        }
+        /* Process the command */
+        return cmd_process(flag, child->argc, child->argv,
+                   &flag_repeat, NULL);
+    }
+}
+```
+
+## 3、进入到command.c中的cmd_process
+
+### cmd_process 函数实际运行部分
+
+```
+enum command_ret_t cmd_process(int flag, int argc, char * const argv[],
+                   int *repeatable, ulong *ticks)
+{
+    enum command_ret_t rc = CMD_RET_SUCCESS;
+    cmd_tbl_t *cmdtp;
+    /* Look up command in command table */
+    cmdtp = find_cmd(argv[0]);                  //初始的cmd也就是argv[0]在经过find_cmd函数后将得到cmd相关的函数；其过程暂不清楚
+                                                //例：此处的argv[0]是booz，经过find_cmd后得到cmdtp->cmd为do_bootz
+    /* found - check max args */
+    if (argc > cmdtp->maxargs)
+        rc = CMD_RET_USAGE;
+    /* avoid 'bootd' recursion */
+    if (cmdtp->cmd == do_bootd) {
+        if (flag & CMD_FLAG_BOOTD) {
+            puts(''bootd' recursion detected\n');
+            rc = CMD_RET_FAILURE;
+        } else {
+            flag |= CMD_FLAG_BOOTD;
+        }
+    }
+    /* If OK so far, then do the command */
+    if (!rc) {
+        if (ticks)
+            *ticks = get_timer(0);
+        rc = cmd_call(cmdtp, flag, argc, argv); //cmd相关的函数do_bootz是在此函数中执行的
+        if (ticks)
+            *ticks = get_timer(*ticks);
+        *repeatable &= cmdtp->repeatable;
+    }
+    if (rc == CMD_RET_USAGE)
+        rc = cmd_usage(cmdtp);
+    return rc;
+}
+```
+
+### find_cmd函数实际执行：
+
+```
+#define ll_entry_start(_type, _list)                    \
+({                                  \
+    static char start[0] __aligned(4) __attribute__((unused,    \
+        section('.u_boot_list_2_'#_list'_1')));         \
+    (_type *)&start;                        \
+})
+ 
+#define ll_entry_end(_type, _list)                  \
+({                                  \
+    static char end[0] __aligned(4) __attribute__((unused,  \
+        section('.u_boot_list_2_'#_list'_3')));         \
+    (_type *)&end;                          \
+})
+ 
+#define ll_entry_count(_type, _list)                    \
+    ({                              \
+        _type *start = ll_entry_start(_type, _list);        \
+        _type *end = ll_entry_end(_type, _list);        \
+        unsigned int _ll_result = end - start;          \
+        _ll_result;                     \
+    })
+ 
+cmd_tbl_t *find_cmd_tbl(const char *cmd, cmd_tbl_t *table, int table_len)
+{
+    cmd_tbl_t *cmdtp;
+    cmd_tbl_t *cmdtp_temp = table;  /* Init value */
+    const char *p;
+    int len;
+    int n_found = 0;
+    if (!cmd)
+        return NULL;
+    /*
+     * Some commands allow length modifiers (like 'cp.b');
+     * compare command name only until first dot.
+     */
+    len = ((p = strchr(cmd, '.')) == NULL) ? strlen (cmd) : (p - cmd);
+    for (cmdtp = table; cmdtp != table + table_len; cmdtp++) {
+        if (strncmp(cmd, cmdtp->name, len) == 0) {
+            if (len == strlen(cmdtp->name))
+                return cmdtp;   /* full match */
+            cmdtp_temp = cmdtp; /* abbreviated command ? */
+            n_found++;
+        }
+    }
+    if (n_found == 1) {         /* exactly one match */
+        return cmdtp_temp;
+    }
+    return NULL;    /* not found or ambiguous command */
+}
+ 
+cmd_tbl_t *find_cmd(const char *cmd)
+{
+    cmd_tbl_t *start = ll_entry_start(cmd_tbl_t, cmd);
+    const int len = ll_entry_count(cmd_tbl_t, cmd);
+    return find_cmd_tbl(cmd, start, len);
+}
+```
+
+### cmd_call函数实际执行：
+
+```
+static int cmd_call(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+{
+    int result;
+    result = (cmdtp->cmd)(cmdtp, flag, argc, argv);      //do_bootz函数在此调用执行
+    if (result)
+        debug('Command failed, result=%d', result);
+    return result;
+}
+```
+
+## 4、进入到cmd_bootm函数中的do_bootz
+
+### do_bootz函数实际执行：
+
+```
+int do_bootz(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+{
+    int ret;
+    /* Consume 'bootz' 此时的argc是4，表示4个参数，同时argv[0]是bootz*/  
+    argc--; argv++;     //此时argc是3，还有3个参数，同时argv[0]是bootz引导内核的地址0x2080000
+    if (bootz_start(cmdtp, flag, argc, argv, &images))          //images当前还只是个空的结构体实例
+        return 1;
+    /*
+     * We are doing the BOOTM_STATE_LOADOS state ourselves, so must
+     * disable interrupts ourselves
+     */
+    bootm_disable_interrupts();
+    images.os.os = IH_OS_LINUX;
+    ret = do_bootm_states(cmdtp, flag, argc, argv,
+                  BOOTM_STATE_OS_PREP | BOOTM_STATE_OS_FAKE_GO |
+                  BOOTM_STATE_OS_GO,
+                  &images, 1);
+    return ret;
+}
+```
+
+### 1、bootz_start函数实际执行：
+
+```
+static int bootz_start(cmd_tbl_t *cmdtp, int flag, int argc,
+            char * const argv[], bootm_headers_t *images)
+{
+    int ret;
+    ulong zi_start, zi_end;
+    ret = do_bootm_states(cmdtp, flag, argc, argv, BOOTM_STATE_START,
+                  images, 1);
+    /* Setup Linux kernel zImage entry point */
+    if (!argc) {
+        images->ep = load_addr;
+        debug('*  kernel: default image load address = 0x%08lx\n',
+                load_addr);
+    } else {
+        images->ep = simple_strtoul(argv[0], NULL, 16);
+        debug('*  kernel: cmdline image address = 0x%08lx\n',
+            images->ep);
+    }
+    printf('images-ep %x\n', images->ep);
+    ret = bootz_setup(images->ep, &zi_start, &zi_end);
+    if (ret != 0)
+        return 1;
+    lmb_reserve(&images->lmb, images->ep, zi_end - zi_start);
+    /*
+     * Handle the BOOTM_STATE_FINDOTHER state ourselves as we do not
+     * have a header that provide this informaiton.
+     */
+    if (bootm_find_ramdisk_fdt(flag, argc, argv))
+        return 1;
+    return 0;
+}
+```
+
+### do_bootm_states函数定义
+
+```
+ int do_bootm_states(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
+            int states, bootm_headers_t *images, int boot_progress)
+{
+    boot_os_fn *boot_fn;
+    ulong iflag = 0;
+    int ret = 0, need_boot_fn;
+    images->state |= states;
+    /*
+     * Work through the states and see how far we get. We stop on
+     * any error.
+     */
+    if (states & BOOTM_STATE_START)                     //states=1,ret=0;BOOTM_STATE_START=(0x00000001);
+        ret = bootm_start(cmdtp, flag, argc, argv);     //在本函数中唯二需要正常执行的函数之一
+    if (!ret && (states & BOOTM_STATE_FINDOS))          //states=1,ret=0;BOOTM_STATE_FINDOS=(0x00000002);
+        ret = bootm_find_os(cmdtp, flag, argc, argv);  
+    if (!ret && (states & BOOTM_STATE_FINDOTHER)) {     //states=1,ret=0;BOOTM_STATE_FINDOTHER=(0x00000004);
+        ret = bootm_find_other(cmdtp, flag, argc, argv);
+        argc = 0;   /* consume the args */
+    }
+    /* From now on, we need the OS boot function */     //此时states=1,ret=0;
+    if (ret)
+        return ret;
+    boot_fn = bootm_os_get_boot_func(images->os.os); //在本函数中唯二需要正常执行的函数之一
+    need_boot_fn = states & (BOOTM_STATE_OS_CMDLINE |
+            BOOTM_STATE_OS_BD_T | BOOTM_STATE_OS_PREP |
+            BOOTM_STATE_OS_FAKE_GO | BOOTM_STATE_OS_GO);        //这部分的宏0x00000 7E 0
+    /* Call various other states that are not generally used */ //此时boot_fn = NULL,need_boot_fn = 0x700
+    if (!ret && (states & BOOTM_STATE_OS_CMDLINE))              //states=1,ret=0;BOOTM_STATE_OS_CMDLINE=(0x00000040);
+        ret = boot_fn(BOOTM_STATE_OS_CMDLINE, argc, argv, images);
+    if (!ret && (states & BOOTM_STATE_OS_BD_T))                 //states=1,ret=0;BOOTM_STATE_OS_BD_T=(0x00000080);
+        ret = boot_fn(BOOTM_STATE_OS_BD_T, argc, argv, images);
+    if (!ret && (states & BOOTM_STATE_OS_PREP))                 //states=1,ret=0;BOOTM_STATE_OS_PREP=(0x00000100);
+        ret = boot_fn(BOOTM_STATE_OS_PREP, argc, argv, images);
+    /* Check for unsupported subcommand. */
+    if (ret) {
+        puts('subcommand not supported\n');
+        return ret;
+    }
+    /* Now run the OS! We hope this doesn't return */
+    if (!ret && (states & BOOTM_STATE_OS_GO))                   //ret =0;states =1;BOOTM_STATE_OS_GO=0x00000400;
+        ret = boot_selected_os(argc, argv, BOOTM_STATE_OS_GO,
+                images, boot_fn);
+    /* Deal with any fallout */
+err:
+    if (iflag)                                          //iflag= 0;ret =0;
+        enable_interrupts();
+    if (ret == BOOTM_ERR_UNIMPLEMENTED)
+        bootstage_error(BOOTSTAGE_ID_DECOMP_UNIMPL);
+    else if (ret == BOOTM_ERR_RESET)
+        do_reset(cmdtp, flag, argc, argv);
+    return ret;
+}
+```
+
+#### bootm_start函数定义实际执行：
+
+```
+static int bootm_start(cmd_tbl_t *cmdtp, int flag, int argc,
+               char * const argv[])
+{
+    memset((void *)&images, 0, sizeof(images));
+    images.verify = getenv_yesno('verify');       //从环境变量中获取verify的值
+    boot_start_lmb(&images);
+    bootstage_mark_name(BOOTSTAGE_ID_BOOTM_START, 'bootm_start');
+    images.state = BOOTM_STATE_START;
+    return 0;
+}
+```
+
+#### 1、getenv_yesno函数定义 实际执行：
+
+```
+char *getenv(const char *name)
+{
+    if (gd->flags & GD_FLG_ENV_READY) { /* after import into hashtable */
+        ENTRY e, *ep;
+        WATCHDOG_RESET();
+        e.key   = name;                         //将需要查找的变量转为ENTRY结构体变量的键值
+        e.data  = NULL;
+        hsearch_r(e, FIND, &ep, &env_htab, 0);
+        return ep ? ep->data : NULL;
+    }
+    /* restricted capabilities before import */
+    if (getenv_f(name, (char *)(gd->env_buf), sizeof(gd->env_buf)) > 0)
+        return (char *)(gd->env_buf);
+    return NULL;
+}
+int getenv_yesno(const char *var)
+{
+    char *s = getenv(var);
+    if (s == NULL)
+        return -1;
+    return (*s == '1' || *s == 'y' || *s == 'Y' || *s == 't' || *s == 'T') ?
+        1 : 0;
+}
+```
+
+getenv函数定义：
+
+本函数涉及到env变量的相关修改，实际解析暂未完成，仅仅初步完成hsearch_r函数的理解（），getenc_f函数的理解分析暂未完成因为好像很多地方均有相关的调用导致打印信息比较杂不好确定
+
+hsearch_r函数定义
+
+```
+int hsearch_r(ENTRY item, ACTION action, ENTRY ** retval,
+          struct hsearch_data *htab, int flag)
+{
+    unsigned int hval;
+    unsigned int count;
+    unsigned int len = strlen(item.key);
+    unsigned int idx;
+    unsigned int first_deleted = 0;
+    int ret;
+    /* Compute an value for the given string. Perhaps use a better method. */
+    hval = len;
+    count = len;
+    //hash表键值生成算法:
+    //将item.key---环境变量name中的字符移位并累加，然后模hash表项数，即为该环境变量在hash表项中的数组索引---hash表键值。">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://nobody-ZWQ.github.io/post/u-boot-qi-dong-liu-cheng-zhi-%20abortboot-wei-an-xia-ctrl%2Bu.html">
+<meta property="og:image" content="https://github.githubassets.com/favicons/favicon.svg">
+<title>u-boot启动流程之 abortboot未按下ctrl+u</title>
+
+
+
+</head>
+<style>
+body{box-sizing: border-box;min-width: 200px;max-width: 900px;margin: 20px auto;padding: 45px;font-size: 16px;font-family: sans-serif;line-height: 1.25;}
+#header{display:flex;padding-bottom:8px;border-bottom: 1px solid var(--borderColor-muted, var(--color-border-muted));margin-bottom: 16px;}
+#footer {margin-top:64px; text-align: center;font-size: small;}
+
+</style>
+
+<style>
+.postTitle{margin: auto 0;font-size:40px;font-weight:bold;}
+.title-right{display:flex;margin:auto 0 0 auto;}
+.title-right .circle{padding: 14px 16px;margin-right:8px;}
+#postBody{border-bottom: 1px solid var(--color-border-default);padding-bottom:36px;}
+#postBody hr{height:2px;}
+#cmButton{height:48px;margin-top:48px;}
+#comments{margin-top:64px;}
+.g-emoji{font-size:24px;}
+@media (max-width: 600px) {
+    body {padding: 8px;}
+    .postTitle{font-size:24px;}
+}
+.copy-feedback {
+    display: none;
+    position: absolute;
+    top: 10px;
+    right: 50px;
+    color: var(--color-fg-on-emphasis);
+    background-color: var(--color-fg-muted);
+    border-radius: 3px;
+    padding: 5px 8px;
+    font-size: 12px;
+}
+</style>
+
+
+
+
+<body>
+    <div id="header">
+<h1 class="postTitle">u-boot启动流程之 abortboot未按下ctrl+u</h1>
+<div class="title-right">
+    <a href="https://nobody-ZWQ.github.io" id="buttonHome" class="btn btn-invisible circle" title="首页">
+        <svg class="octicon" width="16" height="16">
+            <path id="pathHome" fill-rule="evenodd"></path>
+        </svg>
+    </a>
+    
+    <a href="https://github.com/nobody-ZWQ/nobody-ZWQ.github.io/issues/4" target="_blank" class="btn btn-invisible circle" title="Issue">
+        <svg class="octicon" width="16" height="16">
+            <path id="pathIssue" fill-rule="evenodd"></path>
+        </svg>
+    </a>
+    
+
+    <a class="btn btn-invisible circle" onclick="modeSwitch();" title="切换主题">
+        <svg class="octicon" width="16" height="16" >
+            <path id="themeSwitch" fill-rule="evenodd"></path>
+        </svg>
+    </a>
+
+</div>
+</div>
+    <div id="content">
+<div class="markdown-body" id="postBody"><h2>1、起初在cli.c调用</h2>
+<pre class="notranslate"><code class="notranslate">|--&gt;auto_net_upgrade(u-boot/common/autoboot.c)
+|--&gt;run_command_list(u-boot/common/cli.c)
+    |--&gt;parse_string_outer(u-boot/common/cli_hush.c)
+        |--&gt;setup_string_in_str(u-boot/common/cli_hush.c)
+        |--&gt;parse_stream_outer(u-boot/common/cli_hush.c)
+            |--&gt;initialize_context(u-boot/common/cli_hush.c)
+            |--&gt;update_ifs_map(u-boot/common/cli_hush.c)
+            |--&gt;parse_stream(u-boot/common/cli_hush.c)
+            |--&gt;run_list(u-boot/common/cli_hush.c)
+                |--&gt;run_list_real(u-boot/common/cli_hush.c)
+                    |--&gt;make_list_in(u-boot/common/cli_hush.c)
+                    |--&gt;run_pipe_real(u-boot/common/cli_hush.c)
+                        |--&gt;cmd_process(u-boot/common/command.c)
+                            |--&gt;find_cmd(u-boot/common/command.c)
+                            |--&gt;cmd_call(u-boot/common/command.c)
+                                |--&gt;do_bootz(u-boot/common/cmd_bootm.c)
+                                    |--&gt;
+                |--&gt;free_pipe_list(u-boot/common/cli_hush.c)
+</code></pre>
+<h2>2、进入cli_hush.c中的parse_string_outer</h2>
+<h3>parse_string_outer函数定义</h3>
+<pre class="notranslate"><code class="notranslate">int parse_string_outer(const char *s, int flag)
+{
+    struct in_str input;
+    char *p = NULL;
+    int rcode;
+    if (!s)
+        return 1;
+    if (!*s)
+        return 0;
+    if (!(p = strchr(s, '\n')) || *++p) {
+        p = xmalloc(strlen(s) + 2);
+        strcpy(p, s);
+        strcat(p, "\n");
+        setup_string_in_str(&amp;input, p);
+        rcode = parse_stream_outer(&amp;input, flag);
+        free(p);
+        return rcode;
+    } else {
+    setup_string_in_str(&amp;input, s);
+    return parse_stream_outer(&amp;input, flag);
+    }
+}
+</code></pre>
+<h3>parse_stream_outer函数定义</h3>
+<pre class="notranslate"><code class="notranslate">static int parse_stream_outer(struct in_str *inp, int flag)
+{
+    struct p_context ctx;
+    o_string temp=NULL_O_STRING;
+    int rcode;
+    int code = 1;
+    do {
+        ctx.type = flag;
+        initialize_context(&amp;ctx);
+        update_ifs_map();
+        if (!(flag &amp; FLAG_PARSE_SEMICOLON) || (flag &amp; FLAG_REPARSING)) mapset((uchar *)";$&amp;|", 0);
+        inp-&gt;promptmode=1;
+        rcode = parse_stream(&amp;temp, &amp;ctx, inp,
+                     flag &amp; FLAG_CONT_ON_NEWLINE ? -1 : '\n');
+        if (rcode == 1) flag_repeat = 0;
+        if (rcode != 1 &amp;&amp; ctx.old_flag != 0) {
+            syntax();
+            flag_repeat = 0;
+        }
+        if (rcode != 1 &amp;&amp; ctx.old_flag == 0) {
+            done_word(&amp;temp, &amp;ctx);
+            done_pipe(&amp;ctx,PIPE_SEQ);
+            code = run_list(ctx.list_head);
+            if (code == -2) {   /* exit */
+                b_free(&amp;temp);
+                code = 0;
+                /* XXX hackish way to not allow exit from main loop */
+                if (inp-&gt;peek == file_peek) {
+                    printf("exit not allowed from main input shell.\n");
+                    continue;
+                }
+                break;
+            }
+            if (code == -1)
+                flag_repeat = 0;
+        } else {
+            if (ctx.old_flag != 0) {
+                free(ctx.stack);
+                b_reset(&amp;temp);
+            }
+            if (inp-&gt;__promptme == 0) printf("&lt;INTERRUPT&gt;\n");
+            inp-&gt;__promptme = 1;
+            temp.nonnull = 0;
+            temp.quote = 0;
+            inp-&gt;p = NULL;
+            free_pipe_list(ctx.list_head,0);
+        }
+        b_free(&amp;temp);
+    /* loop on syntax errors, return on EOF */
+    } while (rcode != -1 &amp;&amp; !(flag &amp; FLAG_EXIT_FROM_LOOP) &amp;&amp;
+        (inp-&gt;peek != static_peek || b_peek(inp)));
+    return (code != 0) ? 1 : 0;
+}
+</code></pre>
+<h3>run_list_real函数定义</h3>
+<pre class="notranslate"><code class="notranslate">static int run_list_real(struct pipe *pi)
+{
+    char *save_name = NULL;
+    char **list = NULL;
+    char **save_list = NULL;
+    struct pipe *rpipe;
+    int flag_rep = 0;
+    int rcode=0, flag_skip=1;
+    int flag_restore = 0;
+    int if_code=0, next_if_code=0;  /* need double-buffer to handle elif */
+    reserved_style rmode, skip_more_in_this_rmode=RES_XXXX;
+    /* check syntax for "for" */
+    for (rpipe = pi; rpipe; rpipe = rpipe-&gt;next) {
+        if ((rpipe-&gt;r_mode == RES_IN ||
+            rpipe-&gt;r_mode == RES_FOR) &amp;&amp;
+            (rpipe-&gt;next == NULL)) {
+                syntax();
+#ifdef __U_BOOT__
+                flag_repeat = 0;
+#endif
+                return 1;
+        }
+        if ((rpipe-&gt;r_mode == RES_IN &amp;&amp;
+            (rpipe-&gt;next-&gt;r_mode == RES_IN &amp;&amp;
+            rpipe-&gt;next-&gt;progs-&gt;argv != NULL))||
+            (rpipe-&gt;r_mode == RES_FOR &amp;&amp;
+            rpipe-&gt;next-&gt;r_mode != RES_IN)) {
+                syntax();
+#ifdef __U_BOOT__
+                flag_repeat = 0;
+#endif
+                return 1;
+        }
+    }
+    for (; pi; pi = (flag_restore != 0) ? rpipe : pi-&gt;next) {
+        if (pi-&gt;r_mode == RES_WHILE || pi-&gt;r_mode == RES_UNTIL ||
+            pi-&gt;r_mode == RES_FOR) {
+#ifdef __U_BOOT__
+                /* check Ctrl-C */
+                ctrlc();
+                if ((had_ctrlc())) {
+                    return 1;
+                }
+#endif
+                flag_restore = 0;
+                if (!rpipe) {
+                    flag_rep = 0;
+                    rpipe = pi;
+                }
+        }
+        rmode = pi-&gt;r_mode;
+        debug_printf("rmode=%d  if_code=%d  next_if_code=%d skip_more=%d\n", rmode, if_code, next_if_code, skip_more_in_this_rmode);
+        if (rmode == skip_more_in_this_rmode &amp;&amp; flag_skip) {
+            if (pi-&gt;followup == PIPE_SEQ) flag_skip=0;
+            continue;
+        }
+        flag_skip = 1;
+        skip_more_in_this_rmode = RES_XXXX;
+        if (rmode == RES_THEN || rmode == RES_ELSE) if_code = next_if_code;
+        if (rmode == RES_THEN &amp;&amp;  if_code) continue;
+        if (rmode == RES_ELSE &amp;&amp; !if_code) continue;
+        if (rmode == RES_ELIF &amp;&amp; !if_code) break;
+        if (rmode == RES_FOR &amp;&amp; pi-&gt;num_progs) {
+            if (!list) {
+                /* if no variable values after "in" we skip "for" */
+                if (!pi-&gt;next-&gt;progs-&gt;argv) continue;
+                /* create list of variable values */
+                list = make_list_in(pi-&gt;next-&gt;progs-&gt;argv,
+                    pi-&gt;progs-&gt;argv[0]);
+                save_list = list;
+                save_name = pi-&gt;progs-&gt;argv[0];
+                pi-&gt;progs-&gt;argv[0] = NULL;
+                flag_rep = 1;
+            }
+            if (!(*list)) {
+                free(pi-&gt;progs-&gt;argv[0]);
+                free(save_list);
+                list = NULL;
+                flag_rep = 0;
+                pi-&gt;progs-&gt;argv[0] = save_name;
+                continue;
+            } else {
+                /* insert new value from list for variable */
+                if (pi-&gt;progs-&gt;argv[0])
+                    free(pi-&gt;progs-&gt;argv[0]);
+                pi-&gt;progs-&gt;argv[0] = *list++;
+            }
+        }
+        if (rmode == RES_IN) continue;
+        if (rmode == RES_DO) {
+            if (!flag_rep) continue;
+        }
+        if (rmode == RES_DONE) {
+            if (flag_rep) {
+                flag_restore = 1;
+            } else {
+                rpipe = NULL;
+            }
+        }
+        if (pi-&gt;num_progs == 0) continue;
+        rcode = run_pipe_real(pi);
+        debug_printf("run_pipe_real returned %d\n",rcode);
+        if (rcode &lt; -1) {
+            last_return_code = -rcode - 2;
+            return -2;  /* exit */
+        }
+        last_return_code=(rcode == 0) ? 0 : 1;
+        if ( rmode == RES_IF || rmode == RES_ELIF )
+            next_if_code=rcode;  /* can be overwritten a number of times */
+        if (rmode == RES_WHILE)
+            flag_rep = !last_return_code;
+        if (rmode == RES_UNTIL)
+            flag_rep = last_return_code;
+        if ( (rcode==EXIT_SUCCESS &amp;&amp; pi-&gt;followup==PIPE_OR) ||
+             (rcode!=EXIT_SUCCESS &amp;&amp; pi-&gt;followup==PIPE_AND) )
+            skip_more_in_this_rmode=rmode;
+    }
+    return rcode;
+}
+</code></pre>
+<h3>run_pipe_real函数实际运行部分：</h3>
+<pre class="notranslate"><code class="notranslate">static int run_pipe_real(struct pipe *pi)
+{
+    int i;
+    int nextin;
+    int flag = do_repeat ? CMD_FLAG_REPEAT : 0;
+    struct child_prog *child;
+    char *p;
+    nextin = 0;
+    if (pi-&gt;num_progs == 1) child = &amp; (pi-&gt;progs[0]);
+     
+    if (pi-&gt;num_progs == 1 &amp;&amp; pi-&gt;progs[0].argv != NULL) {
+        for (i=0; is_assignment(child-&gt;argv[i]); i++) { /* nothing */ }
+        for (i = 0; is_assignment(child-&gt;argv[i]); i++) {
+            p = insert_var_value(child-&gt;argv[i]);
+            set_local_var(p, 0);
+            if (p != child-&gt;argv[i]) {
+                child-&gt;sp--;
+                free(p);
+            }
+        }
+        /* Process the command */
+        return cmd_process(flag, child-&gt;argc, child-&gt;argv,
+                   &amp;flag_repeat, NULL);
+    }
+}
+</code></pre>
+<h2>3、进入到command.c中的cmd_process</h2>
+<h3>cmd_process 函数实际运行部分</h3>
+<pre class="notranslate"><code class="notranslate">enum command_ret_t cmd_process(int flag, int argc, char * const argv[],
+                   int *repeatable, ulong *ticks)
+{
+    enum command_ret_t rc = CMD_RET_SUCCESS;
+    cmd_tbl_t *cmdtp;
+    /* Look up command in command table */
+    cmdtp = find_cmd(argv[0]);                  //初始的cmd也就是argv[0]在经过find_cmd函数后将得到cmd相关的函数；其过程暂不清楚
+                                                //例：此处的argv[0]是booz，经过find_cmd后得到cmdtp-&gt;cmd为do_bootz
+    /* found - check max args */
+    if (argc &gt; cmdtp-&gt;maxargs)
+        rc = CMD_RET_USAGE;
+    /* avoid "bootd" recursion */
+    if (cmdtp-&gt;cmd == do_bootd) {
+        if (flag &amp; CMD_FLAG_BOOTD) {
+            puts("'bootd' recursion detected\n");
+            rc = CMD_RET_FAILURE;
+        } else {
+            flag |= CMD_FLAG_BOOTD;
+        }
+    }
+    /* If OK so far, then do the command */
+    if (!rc) {
+        if (ticks)
+            *ticks = get_timer(0);
+        rc = cmd_call(cmdtp, flag, argc, argv); //cmd相关的函数do_bootz是在此函数中执行的
+        if (ticks)
+            *ticks = get_timer(*ticks);
+        *repeatable &amp;= cmdtp-&gt;repeatable;
+    }
+    if (rc == CMD_RET_USAGE)
+        rc = cmd_usage(cmdtp);
+    return rc;
+}
+</code></pre>
+<h3>find_cmd函数实际执行：</h3>
+<pre class="notranslate"><code class="notranslate">#define ll_entry_start(_type, _list)                    \
+({                                  \
+    static char start[0] __aligned(4) __attribute__((unused,    \
+        section(".u_boot_list_2_"#_list"_1")));         \
+    (_type *)&amp;start;                        \
+})
+ 
+#define ll_entry_end(_type, _list)                  \
+({                                  \
+    static char end[0] __aligned(4) __attribute__((unused,  \
+        section(".u_boot_list_2_"#_list"_3")));         \
+    (_type *)&amp;end;                          \
+})
+ 
+#define ll_entry_count(_type, _list)                    \
+    ({                              \
+        _type *start = ll_entry_start(_type, _list);        \
+        _type *end = ll_entry_end(_type, _list);        \
+        unsigned int _ll_result = end - start;          \
+        _ll_result;                     \
+    })
+ 
+cmd_tbl_t *find_cmd_tbl(const char *cmd, cmd_tbl_t *table, int table_len)
+{
+    cmd_tbl_t *cmdtp;
+    cmd_tbl_t *cmdtp_temp = table;  /* Init value */
+    const char *p;
+    int len;
+    int n_found = 0;
+    if (!cmd)
+        return NULL;
+    /*
+     * Some commands allow length modifiers (like "cp.b");
+     * compare command name only until first dot.
+     */
+    len = ((p = strchr(cmd, '.')) == NULL) ? strlen (cmd) : (p - cmd);
+    for (cmdtp = table; cmdtp != table + table_len; cmdtp++) {
+        if (strncmp(cmd, cmdtp-&gt;name, len) == 0) {
+            if (len == strlen(cmdtp-&gt;name))
+                return cmdtp;   /* full match */
+            cmdtp_temp = cmdtp; /* abbreviated command ? */
+            n_found++;
+        }
+    }
+    if (n_found == 1) {         /* exactly one match */
+        return cmdtp_temp;
+    }
+    return NULL;    /* not found or ambiguous command */
+}
+ 
+cmd_tbl_t *find_cmd(const char *cmd)
+{
+    cmd_tbl_t *start = ll_entry_start(cmd_tbl_t, cmd);
+    const int len = ll_entry_count(cmd_tbl_t, cmd);
+    return find_cmd_tbl(cmd, start, len);
+}
+</code></pre>
+<h3>cmd_call函数实际执行：</h3>
+<pre class="notranslate"><code class="notranslate">static int cmd_call(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+{
+    int result;
+    result = (cmdtp-&gt;cmd)(cmdtp, flag, argc, argv);      //do_bootz函数在此调用执行
+    if (result)
+        debug("Command failed, result=%d", result);
+    return result;
+}
+</code></pre>
+<h2>4、进入到cmd_bootm函数中的do_bootz</h2>
+<h3>do_bootz函数实际执行：</h3>
+<pre class="notranslate"><code class="notranslate">int do_bootz(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+{
+    int ret;
+    /* Consume 'bootz' 此时的argc是4，表示4个参数，同时argv[0]是bootz*/  
+    argc--; argv++;     //此时argc是3，还有3个参数，同时argv[0]是bootz引导内核的地址0x2080000
+    if (bootz_start(cmdtp, flag, argc, argv, &amp;images))          //images当前还只是个空的结构体实例
+        return 1;
+    /*
+     * We are doing the BOOTM_STATE_LOADOS state ourselves, so must
+     * disable interrupts ourselves
+     */
+    bootm_disable_interrupts();
+    images.os.os = IH_OS_LINUX;
+    ret = do_bootm_states(cmdtp, flag, argc, argv,
+                  BOOTM_STATE_OS_PREP | BOOTM_STATE_OS_FAKE_GO |
+                  BOOTM_STATE_OS_GO,
+                  &amp;images, 1);
+    return ret;
+}
+</code></pre>
+<h3>1、bootz_start函数实际执行：</h3>
+<pre class="notranslate"><code class="notranslate">static int bootz_start(cmd_tbl_t *cmdtp, int flag, int argc,
+            char * const argv[], bootm_headers_t *images)
+{
+    int ret;
+    ulong zi_start, zi_end;
+    ret = do_bootm_states(cmdtp, flag, argc, argv, BOOTM_STATE_START,
+                  images, 1);
+    /* Setup Linux kernel zImage entry point */
+    if (!argc) {
+        images-&gt;ep = load_addr;
+        debug("*  kernel: default image load address = 0x%08lx\n",
+                load_addr);
+    } else {
+        images-&gt;ep = simple_strtoul(argv[0], NULL, 16);
+        debug("*  kernel: cmdline image address = 0x%08lx\n",
+            images-&gt;ep);
+    }
+    printf("images-ep %x\n", images-&gt;ep);
+    ret = bootz_setup(images-&gt;ep, &amp;zi_start, &amp;zi_end);
+    if (ret != 0)
+        return 1;
+    lmb_reserve(&amp;images-&gt;lmb, images-&gt;ep, zi_end - zi_start);
+    /*
+     * Handle the BOOTM_STATE_FINDOTHER state ourselves as we do not
+     * have a header that provide this informaiton.
+     */
+    if (bootm_find_ramdisk_fdt(flag, argc, argv))
+        return 1;
+    return 0;
+}
+</code></pre>
+<h3>do_bootm_states函数定义</h3>
+<pre class="notranslate"><code class="notranslate"> int do_bootm_states(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
+            int states, bootm_headers_t *images, int boot_progress)
+{
+    boot_os_fn *boot_fn;
+    ulong iflag = 0;
+    int ret = 0, need_boot_fn;
+    images-&gt;state |= states;
+    /*
+     * Work through the states and see how far we get. We stop on
+     * any error.
+     */
+    if (states &amp; BOOTM_STATE_START)                     //states=1,ret=0;BOOTM_STATE_START=(0x00000001);
+        ret = bootm_start(cmdtp, flag, argc, argv);     //在本函数中唯二需要正常执行的函数之一
+    if (!ret &amp;&amp; (states &amp; BOOTM_STATE_FINDOS))          //states=1,ret=0;BOOTM_STATE_FINDOS=(0x00000002);
+        ret = bootm_find_os(cmdtp, flag, argc, argv);  
+    if (!ret &amp;&amp; (states &amp; BOOTM_STATE_FINDOTHER)) {     //states=1,ret=0;BOOTM_STATE_FINDOTHER=(0x00000004);
+        ret = bootm_find_other(cmdtp, flag, argc, argv);
+        argc = 0;   /* consume the args */
+    }
+    /* From now on, we need the OS boot function */     //此时states=1,ret=0;
+    if (ret)
+        return ret;
+    boot_fn = bootm_os_get_boot_func(images-&gt;os.os); //在本函数中唯二需要正常执行的函数之一
+    need_boot_fn = states &amp; (BOOTM_STATE_OS_CMDLINE |
+            BOOTM_STATE_OS_BD_T | BOOTM_STATE_OS_PREP |
+            BOOTM_STATE_OS_FAKE_GO | BOOTM_STATE_OS_GO);        //这部分的宏0x00000 7E 0
+    /* Call various other states that are not generally used */ //此时boot_fn = NULL,need_boot_fn = 0x700
+    if (!ret &amp;&amp; (states &amp; BOOTM_STATE_OS_CMDLINE))              //states=1,ret=0;BOOTM_STATE_OS_CMDLINE=(0x00000040);
+        ret = boot_fn(BOOTM_STATE_OS_CMDLINE, argc, argv, images);
+    if (!ret &amp;&amp; (states &amp; BOOTM_STATE_OS_BD_T))                 //states=1,ret=0;BOOTM_STATE_OS_BD_T=(0x00000080);
+        ret = boot_fn(BOOTM_STATE_OS_BD_T, argc, argv, images);
+    if (!ret &amp;&amp; (states &amp; BOOTM_STATE_OS_PREP))                 //states=1,ret=0;BOOTM_STATE_OS_PREP=(0x00000100);
+        ret = boot_fn(BOOTM_STATE_OS_PREP, argc, argv, images);
+    /* Check for unsupported subcommand. */
+    if (ret) {
+        puts("subcommand not supported\n");
+        return ret;
+    }
+    /* Now run the OS! We hope this doesn't return */
+    if (!ret &amp;&amp; (states &amp; BOOTM_STATE_OS_GO))                   //ret =0;states =1;BOOTM_STATE_OS_GO=0x00000400;
+        ret = boot_selected_os(argc, argv, BOOTM_STATE_OS_GO,
+                images, boot_fn);
+    /* Deal with any fallout */
+err:
+    if (iflag)                                          //iflag= 0;ret =0;
+        enable_interrupts();
+    if (ret == BOOTM_ERR_UNIMPLEMENTED)
+        bootstage_error(BOOTSTAGE_ID_DECOMP_UNIMPL);
+    else if (ret == BOOTM_ERR_RESET)
+        do_reset(cmdtp, flag, argc, argv);
+    return ret;
+}
+</code></pre>
+<h4>bootm_start函数定义实际执行：</h4>
+<pre class="notranslate"><code class="notranslate">static int bootm_start(cmd_tbl_t *cmdtp, int flag, int argc,
+               char * const argv[])
+{
+    memset((void *)&amp;images, 0, sizeof(images));
+    images.verify = getenv_yesno("verify");       //从环境变量中获取verify的值
+    boot_start_lmb(&amp;images);
+    bootstage_mark_name(BOOTSTAGE_ID_BOOTM_START, "bootm_start");
+    images.state = BOOTM_STATE_START;
+    return 0;
+}
+</code></pre>
+<h4>1、getenv_yesno函数定义 实际执行：</h4>
+<pre class="notranslate"><code class="notranslate">char *getenv(const char *name)
+{
+    if (gd-&gt;flags &amp; GD_FLG_ENV_READY) { /* after import into hashtable */
+        ENTRY e, *ep;
+        WATCHDOG_RESET();
+        e.key   = name;                         //将需要查找的变量转为ENTRY结构体变量的键值
+        e.data  = NULL;
+        hsearch_r(e, FIND, &amp;ep, &amp;env_htab, 0);
+        return ep ? ep-&gt;data : NULL;
+    }
+    /* restricted capabilities before import */
+    if (getenv_f(name, (char *)(gd-&gt;env_buf), sizeof(gd-&gt;env_buf)) &gt; 0)
+        return (char *)(gd-&gt;env_buf);
+    return NULL;
+}
+int getenv_yesno(const char *var)
+{
+    char *s = getenv(var);
+    if (s == NULL)
+        return -1;
+    return (*s == '1' || *s == 'y' || *s == 'Y' || *s == 't' || *s == 'T') ?
+        1 : 0;
+}
+</code></pre>
+<p>getenv函数定义：</p>
+<p>本函数涉及到env变量的相关修改，实际解析暂未完成，仅仅初步完成hsearch_r函数的理解（），getenc_f函数的理解分析暂未完成因为好像很多地方均有相关的调用导致打印信息比较杂不好确定</p>
+<p>hsearch_r函数定义</p>
+<pre class="notranslate"><code class="notranslate">int hsearch_r(ENTRY item, ACTION action, ENTRY ** retval,
+          struct hsearch_data *htab, int flag)
+{
+    unsigned int hval;
+    unsigned int count;
+    unsigned int len = strlen(item.key);
+    unsigned int idx;
+    unsigned int first_deleted = 0;
+    int ret;
+    /* Compute an value for the given string. Perhaps use a better method. */
+    hval = len;
+    count = len;
+    //hash表键值生成算法:
+    //将item.key---环境变量name中的字符移位并累加，然后模hash表项数，即为该环境变量在hash表项中的数组索引---hash表键值。
+    //注意这里使用的还是估算法，即假设每条环境变量字符串占用8个字节，注意上述代码中hval为32位数，移位操作8次就会发生循环。
+    while (count-- &gt; 0) {
+        hval &lt;&lt;= 4;
+        hval += item.key[count];
+    }
+    /*
+     * First hash function:
+     * simply take the modul but prevent zero.
+     */
+    hval %= htab-&gt;size;                  //htab-&gt;size为哈希表的长度
+    if (hval == 0)                      //保留了表项数组索引0的空间，在之前himport_r调用的hcreate_r分配hash存储空间时，多分配了一个表项空间，即该处的保留空间。
+        ++hval;
+    /* The first index tried. */
+    idx = hval;                         //用模取后的数值作为哈希表的索引
+    if (htab-&gt;table[idx].used) {     //如果新插入的表项计算的索引已被占用，那么需要根据算法进行更新索引
+        /*
+         * Further action might be required according to the
+         * action value.
+         */
+        unsigned hval2;
+        if (htab-&gt;table[idx].used == -1
+            &amp;&amp; !first_deleted)
+            first_deleted = idx;
+        ret = _compare_and_overwrite_entry(item, action, retval, htab,
+            flag, hval, idx);
+        //检查以idx为索引的hash表项中的key(环境变量名字符串)是否和输入参数item.key一致，不一致返回-1
+        //c.2)调用change_ok执行权限检查，不通过返回0
+        //c.3)如果相应表项的成员callback 不为空，则执行该回调函数。函数执行失败返回0
+        //回调函数在hash表项初始化时或被填充（见下面的代码段3）
+        //c.4)执行hash表项修改操作，即修改hash表项中的data为新值
+        if (ret != -1)
+            return ret;
+        /*
+         * Second hash function:
+         * as suggested in [Knuth]
+         */
+        hval2 = 1 + hval % (htab-&gt;size - 2);
+        do {
+            /*
+             * Because SIZE is prime this guarantees to
+             * step through all available indices.
+             */
+            if (idx &lt;= hval2)
+                idx = htab-&gt;size + idx - hval2;
+            else
+                idx -= hval2;
+            /*
+             * If we visited all entries leave the loop
+             * unsuccessfully.
+             */
+            if (idx == hval)
+                break;
+            /* If entry is found use it. */
+            ret = _compare_and_overwrite_entry(item, action, retval,
+                htab, flag, hval, idx);
+            if (ret != -1)
+                return ret;
+        }
+        while (htab-&gt;table[idx].used);
+    }
+    /* An empty bucket has been found. */
+    if (action == ENTER) {
+        /*
+         * If table is full and another entry should be
+         * entered return with error.
+         */
+        if (htab-&gt;filled == htab-&gt;size) {
+            __set_errno(ENOMEM);
+            *retval = NULL;
+            return 0;
+        }
+        /*
+         * Create new entry;
+         * create copies of item.key and item.data
+         */
+        if (first_deleted)
+            idx = first_deleted;
+        htab-&gt;table[idx].used = hval;
+        htab-&gt;table[idx].entry.key = strdup(item.key);
+        htab-&gt;table[idx].entry.data = strdup(item.data);
+        if (!htab-&gt;table[idx].entry.key ||
+            !htab-&gt;table[idx].entry.data) {
+            __set_errno(ENOMEM);
+            *retval = NULL;
+            return 0;
+        }
+        ++htab-&gt;filled;
+        /* This is a new entry, so look up a possible callback */
+        env_callback_init(&amp;htab-&gt;table[idx].entry);
+        /* Also look for flags */
+        env_flags_init(&amp;htab-&gt;table[idx].entry);
+        /* check for permission */
+        if (htab-&gt;change_ok != NULL &amp;&amp; htab-&gt;change_ok(
+            &amp;htab-&gt;table[idx].entry, item.data, env_op_create, flag)) {
+            debug("change_ok() rejected setting variable "
+                "%s, skipping it!\n", item.key);
+            _hdelete(item.key, htab, &amp;htab-&gt;table[idx].entry, idx);
+            __set_errno(EPERM);
+            *retval = NULL;
+            return 0;
+        }
+        /* If there is a callback, call it */
+        if (htab-&gt;table[idx].entry.callback &amp;&amp;
+            htab-&gt;table[idx].entry.callback(item.key, item.data,
+            env_op_create, flag)) {
+            debug("callback() rejected setting variable "
+                "%s, skipping it!\n", item.key);
+            _hdelete(item.key, htab, &amp;htab-&gt;table[idx].entry, idx);
+            __set_errno(EINVAL);
+            *retval = NULL;
+            return 0;
+        }
+        /* return new entry */
+        *retval = &amp;htab-&gt;table[idx].entry;
+        return 1;
+    }
+    __set_errno(ESRCH);
+    *retval = NULL;
+    return 0;
+}
+</code></pre>
+<p>中间涉及调用函数：</p>
+<pre class="notranslate"><code class="notranslate">static inline int _compare_and_overwrite_entry(ENTRY item, ACTION action,
+    ENTRY **retval, struct hsearch_data *htab, int flag,
+    unsigned int hval, unsigned int idx)
+{
+    if (htab-&gt;table[idx].used == hval
+        &amp;&amp; strcmp(item.key, htab-&gt;table[idx].entry.key) == 0) {
+        /* Overwrite existing value? */
+        if ((action == ENTER) &amp;&amp; (item.data != NULL)) {
+            /* check for permission */
+            if (htab-&gt;change_ok != NULL &amp;&amp; htab-&gt;change_ok(
+                &amp;htab-&gt;table[idx].entry, item.data,
+                env_op_overwrite, flag)) {
+                debug("change_ok() rejected setting variable "
+                    "%s, skipping it!\n", item.key);
+                __set_errno(EPERM);
+                *retval = NULL;
+                return 0;
+            }
+            /* If there is a callback, call it */
+            if (htab-&gt;table[idx].entry.callback &amp;&amp;
+                htab-&gt;table[idx].entry.callback(item.key,
+                item.data, env_op_overwrite, flag)) {
+                debug("callback() rejected setting variable "
+                    "%s, skipping it!\n", item.key);
+                __set_errno(EINVAL);
+                *retval = NULL;
+                return 0;
+            }
+            free(htab-&gt;table[idx].entry.data);
+            htab-&gt;table[idx].entry.data = strdup(item.data);
+            if (!htab-&gt;table[idx].entry.data) {
+                __set_errno(ENOMEM);
+                *retval = NULL;
+                return 0;
+            }
+        }
+        /* return found entry */
+        *retval = &amp;htab-&gt;table[idx].entry;
+        return idx;
+    }
+    /* keep searching */
+    return -1;
+}
+</code></pre>
+<h4>2、boot_start_lmb函数定义</h4>
+<p>镜像内存管理，具体详解没看太懂，存在部分的结构体和变量信息不了解</p>
+<pre class="notranslate"><code class="notranslate">static void lmb_remove_region(struct lmb_region *rgn, unsigned long r)
+{
+    unsigned long i;
+    for (i = r; i &lt; rgn-&gt;cnt - 1; i++) {
+        rgn-&gt;region[i].base = rgn-&gt;region[i + 1].base;
+        rgn-&gt;region[i].size = rgn-&gt;region[i + 1].size;
+    }
+    rgn-&gt;cnt--;
+}
+ 
+/* Assumption: base addr of region 1 &lt; base addr of region 2 */
+static void lmb_coalesce_regions(struct lmb_region *rgn,
+        unsigned long r1, unsigned long r2)
+{
+    rgn-&gt;region[r1].size += rgn-&gt;region[r2].size;
+    lmb_remove_region(rgn, r2);
+}
+ 
+static long lmb_addrs_adjacent(phys_addr_t base1, phys_size_t size1,
+        phys_addr_t base2, phys_size_t size2)
+{
+    if (base2 == base1 + size1)
+        return 1;
+    else if (base1 == base2 + size2)
+        return -1;
+    return 0;
+}
+static long lmb_add_region(struct lmb_region *rgn, phys_addr_t base, phys_size_t size)
+{
+    unsigned long coalesced = 0;
+    long adjacent, i;
+    if ((rgn-&gt;cnt == 1) &amp;&amp; (rgn-&gt;region[0].size == 0)) {
+        rgn-&gt;region[0].base = base;
+        rgn-&gt;region[0].size = size;
+        return 0;
+    }
+    /* First try and coalesce this LMB with another. */
+    for (i=0; i &lt; rgn-&gt;cnt; i++) {
+        phys_addr_t rgnbase = rgn-&gt;region[i].base;
+        phys_size_t rgnsize = rgn-&gt;region[i].size;
+        if ((rgnbase == base) &amp;&amp; (rgnsize == size))
+            /* Already have this region, so we're done */
+            return 0;
+        adjacent = lmb_addrs_adjacent(base,size,rgnbase,rgnsize);
+        if ( adjacent &gt; 0 ) {
+            rgn-&gt;region[i].base -= size;
+            rgn-&gt;region[i].size += size;
+            coalesced++;
+            break;
+        }
+        else if ( adjacent &lt; 0 ) {
+            rgn-&gt;region[i].size += size;
+            coalesced++;
+            break;
+        }
+    }
+    if ((i &lt; rgn-&gt;cnt-1) &amp;&amp; lmb_regions_adjacent(rgn, i, i+1) ) {
+        lmb_coalesce_regions(rgn, i, i+1);
+        coalesced++;
+    }
+    if (coalesced)
+        return coalesced;
+    if (rgn-&gt;cnt &gt;= MAX_LMB_REGIONS)
+        return -1;
+    /* Couldn't coalesce the LMB, so add it to the sorted table. */
+    for (i = rgn-&gt;cnt-1; i &gt;= 0; i--) {
+        if (base &lt; rgn-&gt;region[i].base) {
+            rgn-&gt;region[i+1].base = rgn-&gt;region[i].base;
+            rgn-&gt;region[i+1].size = rgn-&gt;region[i].size;
+        } else {
+            rgn-&gt;region[i+1].base = base;
+            rgn-&gt;region[i+1].size = size;
+            break;
+        }
+    }
+    if (base &lt; rgn-&gt;region[0].base) {
+        rgn-&gt;region[0].base = base;
+        rgn-&gt;region[0].size = size;
+    }
+    rgn-&gt;cnt++;
+    return 0;
+}
+long lmb_add(struct lmb *lmb, phys_addr_t base, phys_size_t size)
+{
+    struct lmb_region *_rgn = &amp;(lmb-&gt;memory);
+    return lmb_add_region(_rgn, base, size);
+}
+ulong getenv_bootm_low(void)
+{
+    char *s = getenv("bootm_low");
+    if (s) {
+        ulong tmp = simple_strtoul(s, NULL, 16);
+        return tmp;
+    }
+    return CONFIG_SYS_SDRAM_BASE;
+}
+phys_size_t getenv_bootm_size(void)
+{
+    phys_size_t tmp;
+    char *s = getenv("bootm_size");
+    if (s) {
+        tmp = (phys_size_t)simple_strtoull(s, NULL, 16);
+        return tmp;
+    }
+    s = getenv("bootm_low");
+    if (s)
+        tmp = (phys_size_t)simple_strtoull(s, NULL, 16);
+    else
+        tmp = 0;
+    return gd-&gt;bd-&gt;bi_dram[0].size - tmp;
+}
+void lmb_init(struct lmb *lmb)
+{
+    /* Create a dummy zero size LMB which will get coalesced away later.
+     * This simplifies the lmb_add() code below...
+     */
+    lmb-&gt;memory.region[0].base = 0;
+    lmb-&gt;memory.region[0].size = 0;
+    lmb-&gt;memory.cnt = 1;
+    lmb-&gt;memory.size = 0;
+    /* Ditto. */
+    lmb-&gt;reserved.region[0].base = 0;
+    lmb-&gt;reserved.region[0].size = 0;
+    lmb-&gt;reserved.cnt = 1;
+    lmb-&gt;reserved.size = 0;
+}
+static void boot_start_lmb(bootm_headers_t *images)
+{
+    ulong       mem_start;
+    phys_size_t mem_size;
+    lmb_init(&amp;images-&gt;lmb);
+    mem_start = getenv_bootm_low();
+    mem_size = getenv_bootm_size();
+    lmb_add(&amp;images-&gt;lmb, (phys_addr_t)mem_start, mem_size);
+    arch_lmb_reserve(&amp;images-&gt;lmb);
+    board_lmb_reserve(&amp;images-&gt;lmb);
+}
+</code></pre>
+<h4>bootstage_mark_name</h4>
+<pre class="notranslate"><code class="notranslate">__weak void show_boot_progress(int val) {}
+static inline ulong bootstage_mark_name(enum bootstage_id id, const char *name)
+{
+    show_boot_progress(id);     //未有具体语句，空函数，或者是暂时没找到？待定
+    return 0;
+}
+</code></pre>
+<h3>bootm_os_get_boot_func函数定义</h3>
+<pre class="notranslate"><code class="notranslate">static boot_os_fn *boot_os[] = {
+    [IH_OS_U_BOOT] = do_bootm_standalone,
+#ifdef CONFIG_BOOTM_LINUX
+    [IH_OS_LINUX] = do_bootm_linux,     //linux系统启动，对于zynq平台来说最后是调用这个函数完成的系统启动
+#endif
+#ifdef CONFIG_BOOTM_NETBSD
+    [IH_OS_NETBSD] = do_bootm_netbsd,
+#endif
+#ifdef CONFIG_LYNXKDI
+    [IH_OS_LYNXOS] = do_bootm_lynxkdi,
+#endif
+#ifdef CONFIG_BOOTM_RTEMS
+    [IH_OS_RTEMS] = do_bootm_rtems,
+#endif
+#if defined(CONFIG_BOOTM_OSE)
+    [IH_OS_OSE] = do_bootm_ose,
+#endif
+#if defined(CONFIG_BOOTM_PLAN9)
+    [IH_OS_PLAN9] = do_bootm_plan9,
+#endif
+#if defined(CONFIG_BOOTM_VXWORKS) &amp;&amp; \
+    (defined(CONFIG_PPC) || defined(CONFIG_ARM))
+    [IH_OS_VXWORKS] = do_bootm_vxworks,
+#endif
+#if defined(CONFIG_CMD_ELF)
+    [IH_OS_QNX] = do_bootm_qnxelf,
+#endif
+#ifdef CONFIG_INTEGRITY
+    [IH_OS_INTEGRITY] = do_bootm_integrity,
+#endif
+#ifdef CONFIG_BOOTM_OPENRTOS
+    [IH_OS_OPENRTOS] = do_bootm_openrtos,
+#endif
+};
+boot_os_fn *bootm_os_get_boot_func(int os)
+{
+    return boot_os[os];             //os作为下标，从os结构体中找到os值所对应的内核启动函数，进行启动内核
+                                    //当然，目前是在bootz_start函数中调用do_bootm_states到达的此处，此时的os并未赋上需要的值
+                                    //只有在do_bootz中调用do_bootm_states时此时的os才有正常赋值，也就能够调用到do_bootm_linux进行起内核
+}
+</code></pre>
+<p>do_bootm_linux</p>
+<pre class="notranslate"><code class="notranslate">int do_bootm_linux(int flag, int argc, char * const argv[],
+           bootm_headers_t *images)
+{
+    /* No need for those on ARM */
+    if (flag &amp; BOOTM_STATE_OS_BD_T || flag &amp; BOOTM_STATE_OS_CMDLINE)
+        return -1;
+    if (flag &amp; BOOTM_STATE_OS_PREP) {
+        boot_prep_linux(images);
+        return 0;
+    }
+    if (flag &amp; (BOOTM_STATE_OS_GO | BOOTM_STATE_OS_FAKE_GO)) {
+        boot_jump_linux(images, flag);
+        return 0;
+    }
+    boot_prep_linux(images);
+    boot_jump_linux(images, flag);
+    return 0;
+}
+</code></pre>
+<p>boot_prep_linux 起内核之前的准备工作</p>
+<pre class="notranslate"><code class="notranslate">/* Subcommand: PREP */
+static void boot_prep_linux(bootm_headers_t *images)
+{
+    char *commandline = getenv("bootargs");//获取bootargs参数赋值给commandline
+    if (IMAGE_ENABLE_OF_LIBFDT &amp;&amp; images-&gt;ft_len) {
+#ifdef CONFIG_OF_LIBFDT
+        debug("using: FDT\n");
+        if (image_setup_linux(images)) {
+            printf("FDT creation failed! hanging...");
+            hang();
+        }
+#endif
+    } else if (BOOTM_ENABLE_TAGS) {
+        debug("using: ATAGS\n");
+        setup_start_tag(gd-&gt;bd);
+        if (BOOTM_ENABLE_SERIAL_TAG)
+            setup_serial_tag(&amp;params);
+        if (BOOTM_ENABLE_CMDLINE_TAG)
+            setup_commandline_tag(gd-&gt;bd, commandline);
+        if (BOOTM_ENABLE_REVISION_TAG)
+            setup_revision_tag(&amp;params);
+        if (BOOTM_ENABLE_MEMORY_TAGS)
+            setup_memory_tags(gd-&gt;bd);
+        if (BOOTM_ENABLE_INITRD_TAG) {
+            if (images-&gt;rd_start &amp;&amp; images-&gt;rd_end) {
+                setup_initrd_tag(gd-&gt;bd, images-&gt;rd_start,
+                         images-&gt;rd_end);
+            }
+        }
+        setup_board_tags(&amp;params);
+        setup_end_tag(gd-&gt;bd);
+    } else {
+#ifndef CONFIG_ARM_APPENDED_DTB
+        printf("FDT and ATAGS support not compiled in - hanging\n");
+        hang();
+#endif
+    }
+}
+</code></pre>
+<p>boot_jump_linux 跳转到起内核部分</p>
+<pre class="notranslate"><code class="notranslate">/* Subcommand: GO */
+static void boot_jump_linux(bootm_headers_t *images, int flag)
+{
+#ifdef CONFIG_ARM64
+    void (*kernel_entry)(void *fdt_addr, void *res0, void *res1,
+            void *res2);
+    int fake = (flag &amp; BOOTM_STATE_OS_FAKE_GO);
+    kernel_entry = (void (*)(void *fdt_addr, void *res0, void *res1,
+                void *res2))images-&gt;ep;
+    debug("## Transferring control to Linux (at address %lx)...\n",
+        (ulong) kernel_entry);
+    bootstage_mark(BOOTSTAGE_ID_RUN_OS);
+    announce_and_cleanup(fake);
+    if (!fake) {
+        do_nonsec_virt_switch();
+        kernel_entry(images-&gt;ft_addr, NULL, NULL, NULL);
+    }
+#else
+    unsigned long machid = gd-&gt;bd-&gt;bi_arch_number;
+    char *s;
+    void (*kernel_entry)(int zero, int arch, uint params);
+    unsigned long r2;
+    int fake = (flag &amp; BOOTM_STATE_OS_FAKE_GO);
+    kernel_entry = (void (*)(int, int, uint))images-&gt;ep;
+    s = getenv("machid");
+    if (s) {
+        strict_strtoul(s, 16, &amp;machid);
+        printf("Using machid 0x%lx from environment\n", machid);
+    }
+    debug("## Transferring control to Linux (at address %08lx)" \
+        "...\n", (ulong) kernel_entry);
+    bootstage_mark(BOOTSTAGE_ID_RUN_OS);
+    announce_and_cleanup(fake);
+    if (IMAGE_ENABLE_OF_LIBFDT &amp;&amp; images-&gt;ft_len)
+        r2 = (unsigned long)images-&gt;ft_addr;
+    else
+        r2 = gd-&gt;bd-&gt;bi_boot_params;
+    if (!fake) {
+#if defined(CONFIG_ARMV7_NONSEC) || defined(CONFIG_ARMV7_VIRT)
+        if (armv7_boot_nonsec()) {
+            armv7_init_nonsec();
+            secure_ram_addr(_do_nonsec_entry)(kernel_entry,
+                              0, machid, r2);
+        } else
+#endif
+            kernel_entry(0, machid, r2);
+    }
+#endif
+}
+</code></pre>
+<h3>bootz_setup函数定义</h3>
+<p>本函数的主要作用是更新image的start和end信息，并给出打印信息</p>
+<pre class="notranslate"><code class="notranslate">int bootz_setup(ulong image, ulong *start, ulong *end)
+{
+    struct zimage_header *zi;
+    zi = (struct zimage_header *)map_sysmem(image, 0);
+    printf("Kernel image @ %#08lx [ %#08lx - %#08lx ]\n", image, *start, *end);
+    if (zi-&gt;zi_magic != LINUX_ARM_ZIMAGE_MAGIC) {
+        puts("Bad Linux ARM zImage magic!\n");
+        return 1;
+    }
+    *start = zi-&gt;zi_start;
+    *end = zi-&gt;zi_end;
+    printf("Kernel image @ %#08lx [ %#08lx - %#08lx ]\n", image, *start,
+          *end);
+    return 0;
+}
+</code></pre>
+<h3>lmb_reserve函数定义</h3>
+<pre class="notranslate"><code class="notranslate">static void lmb_remove_region(struct lmb_region *rgn, unsigned long r)
+{
+    unsigned long i;
+    for (i = r; i &lt; rgn-&gt;cnt - 1; i++) {
+        rgn-&gt;region[i].base = rgn-&gt;region[i + 1].base;
+        rgn-&gt;region[i].size = rgn-&gt;region[i + 1].size;
+    }
+    rgn-&gt;cnt--;
+}
+ 
+ 
+/* Assumption: base addr of region 1 &lt; base addr of region 2 */
+static void lmb_coalesce_regions(struct lmb_region *rgn,
+        unsigned long r1, unsigned long r2)
+{
+    rgn-&gt;region[r1].size += rgn-&gt;region[r2].size;
+    lmb_remove_region(rgn, r2);
+}
+ 
+ 
+static long lmb_addrs_adjacent(phys_addr_t base1, phys_size_t size1,
+        phys_addr_t base2, phys_size_t size2)
+{
+    if (base2 == base1 + size1)
+        return 1;
+    else if (base1 == base2 + size2)
+        return -1;
+    return 0;
+}
+static long lmb_add_region(struct lmb_region *rgn, phys_addr_t base, phys_size_t size)
+{
+    unsigned long coalesced = 0;
+    long adjacent, i;
+    if ((rgn-&gt;cnt == 1) &amp;&amp; (rgn-&gt;region[0].size == 0)) {
+        rgn-&gt;region[0].base = base;
+        rgn-&gt;region[0].size = size;
+        return 0;
+    }
+    /* First try and coalesce this LMB with another. */
+    for (i=0; i &lt; rgn-&gt;cnt; i++) {
+        phys_addr_t rgnbase = rgn-&gt;region[i].base;
+        phys_size_t rgnsize = rgn-&gt;region[i].size;
+        if ((rgnbase == base) &amp;&amp; (rgnsize == size))
+            /* Already have this region, so we're done */
+            return 0;
+        adjacent = lmb_addrs_adjacent(base,size,rgnbase,rgnsize);
+        if ( adjacent &gt; 0 ) {
+            rgn-&gt;region[i].base -= size;
+            rgn-&gt;region[i].size += size;
+            coalesced++;
+            break;
+        }
+        else if ( adjacent &lt; 0 ) {
+            rgn-&gt;region[i].size += size;
+            coalesced++;
+            break;
+        }
+    }
+    if ((i &lt; rgn-&gt;cnt-1) &amp;&amp; lmb_regions_adjacent(rgn, i, i+1) ) {
+        lmb_coalesce_regions(rgn, i, i+1);
+        coalesced++;
+    }
+    if (coalesced)
+        return coalesced;
+    if (rgn-&gt;cnt &gt;= MAX_LMB_REGIONS)
+        return -1;
+    /* Couldn't coalesce the LMB, so add it to the sorted table. */
+    for (i = rgn-&gt;cnt-1; i &gt;= 0; i--) {
+        if (base &lt; rgn-&gt;region[i].base) {
+            rgn-&gt;region[i+1].base = rgn-&gt;region[i].base;
+            rgn-&gt;region[i+1].size = rgn-&gt;region[i].size;
+        } else {
+            rgn-&gt;region[i+1].base = base;
+            rgn-&gt;region[i+1].size = size;
+            break;
+        }
+    }
+    if (base &lt; rgn-&gt;region[0].base) {
+        rgn-&gt;region[0].base = base;
+        rgn-&gt;region[0].size = size;
+    }
+    rgn-&gt;cnt++;
+    return 0;
+}
+long lmb_reserve(struct lmb *lmb, phys_addr_t base, phys_size_t size)
+{
+    struct lmb_region *_rgn = &amp;(lmb-&gt;reserved);
+    return lmb_add_region(_rgn, base, size);
+}
+</code></pre></div>
+<div style="font-size:small;margin-top:8px;float:right;"></div>
+
+<button class="btn btn-block" type="button" onclick="openComments()" id="cmButton">评论</button>
+<div class="comments" id="comments"></div>
+
+</div>
+    <div id="footer"><div id="footer1">Copyright © <span id="copyrightYear"></span> <a href="https://nobody-ZWQ.github.io">Blog Title</a></div>
+<div id="footer2">
+    <span id="runday"></span><span>Powered by <a href="https://meekdai.com/Gmeek.html" target="_blank">Gmeek</a></span>
+</div>
+
+<script>
+var now=new Date();
+document.getElementById("copyrightYear").innerHTML=now.getFullYear();
+
+if(""!=""){
+    var startSite=new Date("");
+    var diff=now.getTime()-startSite.getTime();
+    var diffDay=Math.floor(diff/(1000*60*60*24));
+    document.getElementById("runday").innerHTML="网站运行"+diffDay+"天"+" • ";
+}
+</script></div>
+</body>
+<script>
+var IconList={'sun': 'M8 10.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM8 12a4 4 0 100-8 4 4 0 000 8zM8 0a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0V.75A.75.75 0 018 0zm0 13a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 018 13zM2.343 2.343a.75.75 0 011.061 0l1.06 1.061a.75.75 0 01-1.06 1.06l-1.06-1.06a.75.75 0 010-1.06zm9.193 9.193a.75.75 0 011.06 0l1.061 1.06a.75.75 0 01-1.06 1.061l-1.061-1.06a.75.75 0 010-1.061zM16 8a.75.75 0 01-.75.75h-1.5a.75.75 0 010-1.5h1.5A.75.75 0 0116 8zM3 8a.75.75 0 01-.75.75H.75a.75.75 0 010-1.5h1.5A.75.75 0 013 8zm10.657-5.657a.75.75 0 010 1.061l-1.061 1.06a.75.75 0 11-1.06-1.06l1.06-1.06a.75.75 0 011.06 0zm-9.193 9.193a.75.75 0 010 1.06l-1.06 1.061a.75.75 0 11-1.061-1.06l1.06-1.061a.75.75 0 011.061 0z', 'moon': 'M9.598 1.591a.75.75 0 01.785-.175 7 7 0 11-8.967 8.967.75.75 0 01.961-.96 5.5 5.5 0 007.046-7.046.75.75 0 01.175-.786zm1.616 1.945a7 7 0 01-7.678 7.678 5.5 5.5 0 107.678-7.678z', 'sync': 'M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z', 'home': 'M6.906.664a1.749 1.749 0 0 1 2.187 0l5.25 4.2c.415.332.657.835.657 1.367v7.019A1.75 1.75 0 0 1 13.25 15h-3.5a.75.75 0 0 1-.75-.75V9H7v5.25a.75.75 0 0 1-.75.75h-3.5A1.75 1.75 0 0 1 1 13.25V6.23c0-.531.242-1.034.657-1.366l5.25-4.2Zm1.25 1.171a.25.25 0 0 0-.312 0l-5.25 4.2a.25.25 0 0 0-.094.196v7.019c0 .138.112.25.25.25H5.5V8.25a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 .75.75v5.25h2.75a.25.25 0 0 0 .25-.25V6.23a.25.25 0 0 0-.094-.195Z', 'github': 'M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z', 'copy': 'M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z', 'check': 'M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z'};
+var utterancesLoad=0;
+
+let themeSettings={
+    "dark": ["dark","moon","#00f0ff","dark-blue"],
+    "light": ["light","sun","#ff5000","github-light"],
+    "auto": ["auto","sync","","preferred-color-scheme"]
+};
+function changeTheme(mode, icon, color, utheme){
+    document.documentElement.setAttribute("data-color-mode",mode);
+    document.getElementById("themeSwitch").setAttribute("d",value=IconList[icon]);
+    document.getElementById("themeSwitch").parentNode.style.color=color;
+    if(utterancesLoad==1){utterancesTheme(utheme);}
+}
+function modeSwitch(){
+    let currentMode=document.documentElement.getAttribute('data-color-mode');
+    let newMode = currentMode === "light" ? "dark" : currentMode === "dark" ? "auto" : "light";
+    localStorage.setItem("meek_theme", newMode);
+    if(themeSettings[newMode]){
+        changeTheme(...themeSettings[newMode]);
+    }
+}
+function utterancesTheme(theme){
+    const message={type:'set-theme',theme: theme};
+    const iframe=document.getElementsByClassName('utterances-frame')[0];
+    iframe.contentWindow.postMessage(message,'https://utteranc.es');
+}
+if(themeSettings[theme]){changeTheme(...themeSettings[theme]);}
+console.log("\n %c Gmeek last https://github.com/Meekdai/Gmeek \n","padding:5px 0;background:#02d81d;color:#fff");
+</script>
+
+<script>
+document.getElementById("pathHome").setAttribute("d",IconList["home"]);
+document.getElementById("pathIssue").setAttribute("d",IconList["github"]);
+
+
+
+function openComments(){
+    cm=document.getElementById("comments");
+    cmButton=document.getElementById("cmButton");
+    cmButton.innerHTML="loading";
+    span=document.createElement("span");
+    span.setAttribute("class","AnimatedEllipsis");
+    cmButton.appendChild(span);
+
+    script=document.createElement("script");
+    script.setAttribute("src","https://utteranc.es/client.js");
+    script.setAttribute("repo","nobody-ZWQ/nobody-ZWQ.github.io");
+    script.setAttribute("issue-term","title");
+    
+    if(localStorage.getItem("meek_theme")=="dark"){script.setAttribute("theme","dark-blue");}
+    else if(localStorage.getItem("meek_theme")=="light") {script.setAttribute("theme","github-light");}
+    else{script.setAttribute("theme","preferred-color-scheme");}
+    
+    script.setAttribute("crossorigin","anonymous");
+    script.setAttribute("async","");
+    cm.appendChild(script);
+
+    int=self.setInterval("iFrameLoading()",200);
+}
+
+function iFrameLoading(){
+    var utterances=document.getElementsByClassName('utterances');
+    if(utterances.length==1){
+        if(utterances[0].style.height!=""){
+            utterancesLoad=1;
+            int=window.clearInterval(int);
+            document.getElementById("cmButton").style.display="none";
+            console.log("utterances Load OK");
+        }
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const createClipboardHTML = (codeContent, additionalClasses = '') => `
+        <pre class="notranslate"><code class="notranslate">${codeContent}</code></pre>
+        <div class="clipboard-container position-absolute right-0 top-0 ${additionalClasses}">
+            <clipboard-copy class="ClipboardButton btn m-2 p-0" role="button" style="display: inherit;">
+                <svg height="16" width="16" class="octicon octicon-copy m-2"><path d="${IconList["copy"]}"></path></svg>
+                <svg height="16" width="16" class="octicon octicon-check color-fg-success m-2 d-none"><path d="${IconList["check"]}"></path></svg>
+            </clipboard-copy>
+            <div class="copy-feedback">Copied!</div>
+        </div>
+    `;
+
+    const handleCodeElements = (selector = '') => {
+        document.querySelectorAll(selector).forEach(codeElement => {
+            const codeContent = codeElement.innerHTML;
+            const newStructure = document.createElement('div');
+            newStructure.className = 'snippet-clipboard-content position-relative overflow-auto';
+            newStructure.innerHTML = createClipboardHTML(codeContent);
+
+            const parentElement = codeElement.parentElement;
+            if (selector.includes('highlight')) {
+                parentElement.insertBefore(newStructure, codeElement.nextSibling);
+                parentElement.removeChild(codeElement);
+            } else {
+                parentElement.parentElement.replaceChild(newStructure, parentElement);
+            }
+        });
+    };
+
+    handleCodeElements('pre.notranslate > code.notranslate');
+    handleCodeElements('div.highlight > pre.notranslate');
+
+    let currentFeedback = null;
+    document.querySelectorAll('clipboard-copy').forEach(copyButton => {
+        copyButton.addEventListener('click', () => {
+            const codeContent = copyButton.closest('.snippet-clipboard-content').innerText;
+            const tempTextArea = document.createElement('textarea');
+            tempTextArea.value = codeContent;
+            document.body.appendChild(tempTextArea);
+            tempTextArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(tempTextArea);
+
+            const copyIcon = copyButton.querySelector('.octicon-copy');
+            const checkIcon = copyButton.querySelector('.octicon-check');
+            const copyFeedback = copyButton.nextElementSibling;
+
+            if (currentFeedback && currentFeedback !== copyFeedback) {currentFeedback.style.display = 'none';}
+            currentFeedback = copyFeedback;
+
+            copyIcon.classList.add('d-none');
+            checkIcon.classList.remove('d-none');
+            copyFeedback.style.display = 'block';
+            copyButton.style.borderColor = 'var(--color-success-fg)';
+
+            setTimeout(() => {
+                copyIcon.classList.remove('d-none');
+                checkIcon.classList.add('d-none');
+                copyFeedback.style.display = 'none';
+                copyButton.style.borderColor = '';
+            }, 2000);
+        });
+    });
+});
+
+</script>
+
+
+</html>

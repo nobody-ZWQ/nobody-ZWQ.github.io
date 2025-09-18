@@ -1,2 +1,565 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>Blog Title</title><link>https://nobody-ZWQ.github.io</link><description>Blog description</description><copyright>Blog Title</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://github.githubassets.com/favicons/favicon.svg</url><title>avatar</title><link>https://nobody-ZWQ.github.io</link></image><lastBuildDate>Thu, 18 Sep 2025 17:18:38 +0000</lastBuildDate><managingEditor>Blog Title</managingEditor><ttl>60</ttl><webMaster>Blog Title</webMaster><item><title>u-boot启动流程之 abortboot按下ctrl+u</title><link>https://nobody-ZWQ.github.io/post/u-boot-qi-dong-liu-cheng-zhi-%20abortboot-an-xia-ctrl%2Bu.html</link><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/u-boot-qi-dong-liu-cheng-zhi-%20abortboot-an-xia-ctrl%2Bu.html</guid><pubDate>Thu, 18 Sep 2025 17:07:21 +0000</pubDate></item><item><title>display基础知识</title><link>https://nobody-ZWQ.github.io/post/display-ji-chu-zhi-shi.html</link><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/display-ji-chu-zhi-shi.html</guid><pubDate>Thu, 18 Sep 2025 16:54:16 +0000</pubDate></item><item><title>USB枚举过程</title><link>https://nobody-ZWQ.github.io/post/USB-mei-ju-guo-cheng.html</link><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/USB-mei-ju-guo-cheng.html</guid><pubDate>Thu, 18 Sep 2025 13:42:22 +0000</pubDate></item></channel></rss>
+<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>Blog Title</title><link>https://nobody-ZWQ.github.io</link><description>Blog description</description><copyright>Blog Title</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://github.githubassets.com/favicons/favicon.svg</url><title>avatar</title><link>https://nobody-ZWQ.github.io</link></image><lastBuildDate>Thu, 18 Sep 2025 17:21:27 +0000</lastBuildDate><managingEditor>Blog Title</managingEditor><ttl>60</ttl><webMaster>Blog Title</webMaster><item><title>u-boot启动流程之 abortboot未按下ctrl+u</title><link>https://nobody-ZWQ.github.io/post/u-boot-qi-dong-liu-cheng-zhi-%20abortboot-wei-an-xia-ctrl%2Bu.html</link><description>## 1、起初在cli.c调用
+
+```
+|--&gt;auto_net_upgrade(u-boot/common/autoboot.c)
+|--&gt;run_command_list(u-boot/common/cli.c)
+    |--&gt;parse_string_outer(u-boot/common/cli_hush.c)
+        |--&gt;setup_string_in_str(u-boot/common/cli_hush.c)
+        |--&gt;parse_stream_outer(u-boot/common/cli_hush.c)
+            |--&gt;initialize_context(u-boot/common/cli_hush.c)
+            |--&gt;update_ifs_map(u-boot/common/cli_hush.c)
+            |--&gt;parse_stream(u-boot/common/cli_hush.c)
+            |--&gt;run_list(u-boot/common/cli_hush.c)
+                |--&gt;run_list_real(u-boot/common/cli_hush.c)
+                    |--&gt;make_list_in(u-boot/common/cli_hush.c)
+                    |--&gt;run_pipe_real(u-boot/common/cli_hush.c)
+                        |--&gt;cmd_process(u-boot/common/command.c)
+                            |--&gt;find_cmd(u-boot/common/command.c)
+                            |--&gt;cmd_call(u-boot/common/command.c)
+                                |--&gt;do_bootz(u-boot/common/cmd_bootm.c)
+                                    |--&gt;
+                |--&gt;free_pipe_list(u-boot/common/cli_hush.c)
+```
+
+## 2、进入cli_hush.c中的parse_string_outer
+
+### parse_string_outer函数定义
+
+```
+int parse_string_outer(const char *s, int flag)
+{
+    struct in_str input;
+    char *p = NULL;
+    int rcode;
+    if (!s)
+        return 1;
+    if (!*s)
+        return 0;
+    if (!(p = strchr(s, '\n')) || *++p) {
+        p = xmalloc(strlen(s) + 2);
+        strcpy(p, s);
+        strcat(p, '\n');
+        setup_string_in_str(&amp;input, p);
+        rcode = parse_stream_outer(&amp;input, flag);
+        free(p);
+        return rcode;
+    } else {
+    setup_string_in_str(&amp;input, s);
+    return parse_stream_outer(&amp;input, flag);
+    }
+}
+```
+
+### parse_stream_outer函数定义
+
+```
+static int parse_stream_outer(struct in_str *inp, int flag)
+{
+    struct p_context ctx;
+    o_string temp=NULL_O_STRING;
+    int rcode;
+    int code = 1;
+    do {
+        ctx.type = flag;
+        initialize_context(&amp;ctx);
+        update_ifs_map();
+        if (!(flag &amp; FLAG_PARSE_SEMICOLON) || (flag &amp; FLAG_REPARSING)) mapset((uchar *)';$&amp;|', 0);
+        inp-&gt;promptmode=1;
+        rcode = parse_stream(&amp;temp, &amp;ctx, inp,
+                     flag &amp; FLAG_CONT_ON_NEWLINE ? -1 : '\n');
+        if (rcode == 1) flag_repeat = 0;
+        if (rcode != 1 &amp;&amp; ctx.old_flag != 0) {
+            syntax();
+            flag_repeat = 0;
+        }
+        if (rcode != 1 &amp;&amp; ctx.old_flag == 0) {
+            done_word(&amp;temp, &amp;ctx);
+            done_pipe(&amp;ctx,PIPE_SEQ);
+            code = run_list(ctx.list_head);
+            if (code == -2) {   /* exit */
+                b_free(&amp;temp);
+                code = 0;
+                /* XXX hackish way to not allow exit from main loop */
+                if (inp-&gt;peek == file_peek) {
+                    printf('exit not allowed from main input shell.\n');
+                    continue;
+                }
+                break;
+            }
+            if (code == -1)
+                flag_repeat = 0;
+        } else {
+            if (ctx.old_flag != 0) {
+                free(ctx.stack);
+                b_reset(&amp;temp);
+            }
+            if (inp-&gt;__promptme == 0) printf('&lt;INTERRUPT&gt;\n');
+            inp-&gt;__promptme = 1;
+            temp.nonnull = 0;
+            temp.quote = 0;
+            inp-&gt;p = NULL;
+            free_pipe_list(ctx.list_head,0);
+        }
+        b_free(&amp;temp);
+    /* loop on syntax errors, return on EOF */
+    } while (rcode != -1 &amp;&amp; !(flag &amp; FLAG_EXIT_FROM_LOOP) &amp;&amp;
+        (inp-&gt;peek != static_peek || b_peek(inp)));
+    return (code != 0) ? 1 : 0;
+}
+```
+
+
+
+### run_list_real函数定义
+
+```
+static int run_list_real(struct pipe *pi)
+{
+    char *save_name = NULL;
+    char **list = NULL;
+    char **save_list = NULL;
+    struct pipe *rpipe;
+    int flag_rep = 0;
+    int rcode=0, flag_skip=1;
+    int flag_restore = 0;
+    int if_code=0, next_if_code=0;  /* need double-buffer to handle elif */
+    reserved_style rmode, skip_more_in_this_rmode=RES_XXXX;
+    /* check syntax for 'for' */
+    for (rpipe = pi; rpipe; rpipe = rpipe-&gt;next) {
+        if ((rpipe-&gt;r_mode == RES_IN ||
+            rpipe-&gt;r_mode == RES_FOR) &amp;&amp;
+            (rpipe-&gt;next == NULL)) {
+                syntax();
+#ifdef __U_BOOT__
+                flag_repeat = 0;
+#endif
+                return 1;
+        }
+        if ((rpipe-&gt;r_mode == RES_IN &amp;&amp;
+            (rpipe-&gt;next-&gt;r_mode == RES_IN &amp;&amp;
+            rpipe-&gt;next-&gt;progs-&gt;argv != NULL))||
+            (rpipe-&gt;r_mode == RES_FOR &amp;&amp;
+            rpipe-&gt;next-&gt;r_mode != RES_IN)) {
+                syntax();
+#ifdef __U_BOOT__
+                flag_repeat = 0;
+#endif
+                return 1;
+        }
+    }
+    for (; pi; pi = (flag_restore != 0) ? rpipe : pi-&gt;next) {
+        if (pi-&gt;r_mode == RES_WHILE || pi-&gt;r_mode == RES_UNTIL ||
+            pi-&gt;r_mode == RES_FOR) {
+#ifdef __U_BOOT__
+                /* check Ctrl-C */
+                ctrlc();
+                if ((had_ctrlc())) {
+                    return 1;
+                }
+#endif
+                flag_restore = 0;
+                if (!rpipe) {
+                    flag_rep = 0;
+                    rpipe = pi;
+                }
+        }
+        rmode = pi-&gt;r_mode;
+        debug_printf('rmode=%d  if_code=%d  next_if_code=%d skip_more=%d\n', rmode, if_code, next_if_code, skip_more_in_this_rmode);
+        if (rmode == skip_more_in_this_rmode &amp;&amp; flag_skip) {
+            if (pi-&gt;followup == PIPE_SEQ) flag_skip=0;
+            continue;
+        }
+        flag_skip = 1;
+        skip_more_in_this_rmode = RES_XXXX;
+        if (rmode == RES_THEN || rmode == RES_ELSE) if_code = next_if_code;
+        if (rmode == RES_THEN &amp;&amp;  if_code) continue;
+        if (rmode == RES_ELSE &amp;&amp; !if_code) continue;
+        if (rmode == RES_ELIF &amp;&amp; !if_code) break;
+        if (rmode == RES_FOR &amp;&amp; pi-&gt;num_progs) {
+            if (!list) {
+                /* if no variable values after 'in' we skip 'for' */
+                if (!pi-&gt;next-&gt;progs-&gt;argv) continue;
+                /* create list of variable values */
+                list = make_list_in(pi-&gt;next-&gt;progs-&gt;argv,
+                    pi-&gt;progs-&gt;argv[0]);
+                save_list = list;
+                save_name = pi-&gt;progs-&gt;argv[0];
+                pi-&gt;progs-&gt;argv[0] = NULL;
+                flag_rep = 1;
+            }
+            if (!(*list)) {
+                free(pi-&gt;progs-&gt;argv[0]);
+                free(save_list);
+                list = NULL;
+                flag_rep = 0;
+                pi-&gt;progs-&gt;argv[0] = save_name;
+                continue;
+            } else {
+                /* insert new value from list for variable */
+                if (pi-&gt;progs-&gt;argv[0])
+                    free(pi-&gt;progs-&gt;argv[0]);
+                pi-&gt;progs-&gt;argv[0] = *list++;
+            }
+        }
+        if (rmode == RES_IN) continue;
+        if (rmode == RES_DO) {
+            if (!flag_rep) continue;
+        }
+        if (rmode == RES_DONE) {
+            if (flag_rep) {
+                flag_restore = 1;
+            } else {
+                rpipe = NULL;
+            }
+        }
+        if (pi-&gt;num_progs == 0) continue;
+        rcode = run_pipe_real(pi);
+        debug_printf('run_pipe_real returned %d\n',rcode);
+        if (rcode &lt; -1) {
+            last_return_code = -rcode - 2;
+            return -2;  /* exit */
+        }
+        last_return_code=(rcode == 0) ? 0 : 1;
+        if ( rmode == RES_IF || rmode == RES_ELIF )
+            next_if_code=rcode;  /* can be overwritten a number of times */
+        if (rmode == RES_WHILE)
+            flag_rep = !last_return_code;
+        if (rmode == RES_UNTIL)
+            flag_rep = last_return_code;
+        if ( (rcode==EXIT_SUCCESS &amp;&amp; pi-&gt;followup==PIPE_OR) ||
+             (rcode!=EXIT_SUCCESS &amp;&amp; pi-&gt;followup==PIPE_AND) )
+            skip_more_in_this_rmode=rmode;
+    }
+    return rcode;
+}
+```
+
+
+
+### run_pipe_real函数实际运行部分：
+
+```
+static int run_pipe_real(struct pipe *pi)
+{
+    int i;
+    int nextin;
+    int flag = do_repeat ? CMD_FLAG_REPEAT : 0;
+    struct child_prog *child;
+    char *p;
+    nextin = 0;
+    if (pi-&gt;num_progs == 1) child = &amp; (pi-&gt;progs[0]);
+     
+    if (pi-&gt;num_progs == 1 &amp;&amp; pi-&gt;progs[0].argv != NULL) {
+        for (i=0; is_assignment(child-&gt;argv[i]); i++) { /* nothing */ }
+        for (i = 0; is_assignment(child-&gt;argv[i]); i++) {
+            p = insert_var_value(child-&gt;argv[i]);
+            set_local_var(p, 0);
+            if (p != child-&gt;argv[i]) {
+                child-&gt;sp--;
+                free(p);
+            }
+        }
+        /* Process the command */
+        return cmd_process(flag, child-&gt;argc, child-&gt;argv,
+                   &amp;flag_repeat, NULL);
+    }
+}
+```
+
+## 3、进入到command.c中的cmd_process
+
+### cmd_process 函数实际运行部分
+
+```
+enum command_ret_t cmd_process(int flag, int argc, char * const argv[],
+                   int *repeatable, ulong *ticks)
+{
+    enum command_ret_t rc = CMD_RET_SUCCESS;
+    cmd_tbl_t *cmdtp;
+    /* Look up command in command table */
+    cmdtp = find_cmd(argv[0]);                  //初始的cmd也就是argv[0]在经过find_cmd函数后将得到cmd相关的函数；其过程暂不清楚
+                                                //例：此处的argv[0]是booz，经过find_cmd后得到cmdtp-&gt;cmd为do_bootz
+    /* found - check max args */
+    if (argc &gt; cmdtp-&gt;maxargs)
+        rc = CMD_RET_USAGE;
+    /* avoid 'bootd' recursion */
+    if (cmdtp-&gt;cmd == do_bootd) {
+        if (flag &amp; CMD_FLAG_BOOTD) {
+            puts(''bootd' recursion detected\n');
+            rc = CMD_RET_FAILURE;
+        } else {
+            flag |= CMD_FLAG_BOOTD;
+        }
+    }
+    /* If OK so far, then do the command */
+    if (!rc) {
+        if (ticks)
+            *ticks = get_timer(0);
+        rc = cmd_call(cmdtp, flag, argc, argv); //cmd相关的函数do_bootz是在此函数中执行的
+        if (ticks)
+            *ticks = get_timer(*ticks);
+        *repeatable &amp;= cmdtp-&gt;repeatable;
+    }
+    if (rc == CMD_RET_USAGE)
+        rc = cmd_usage(cmdtp);
+    return rc;
+}
+```
+
+### find_cmd函数实际执行：
+
+```
+#define ll_entry_start(_type, _list)                    \
+({                                  \
+    static char start[0] __aligned(4) __attribute__((unused,    \
+        section('.u_boot_list_2_'#_list'_1')));         \
+    (_type *)&amp;start;                        \
+})
+ 
+#define ll_entry_end(_type, _list)                  \
+({                                  \
+    static char end[0] __aligned(4) __attribute__((unused,  \
+        section('.u_boot_list_2_'#_list'_3')));         \
+    (_type *)&amp;end;                          \
+})
+ 
+#define ll_entry_count(_type, _list)                    \
+    ({                              \
+        _type *start = ll_entry_start(_type, _list);        \
+        _type *end = ll_entry_end(_type, _list);        \
+        unsigned int _ll_result = end - start;          \
+        _ll_result;                     \
+    })
+ 
+cmd_tbl_t *find_cmd_tbl(const char *cmd, cmd_tbl_t *table, int table_len)
+{
+    cmd_tbl_t *cmdtp;
+    cmd_tbl_t *cmdtp_temp = table;  /* Init value */
+    const char *p;
+    int len;
+    int n_found = 0;
+    if (!cmd)
+        return NULL;
+    /*
+     * Some commands allow length modifiers (like 'cp.b');
+     * compare command name only until first dot.
+     */
+    len = ((p = strchr(cmd, '.')) == NULL) ? strlen (cmd) : (p - cmd);
+    for (cmdtp = table; cmdtp != table + table_len; cmdtp++) {
+        if (strncmp(cmd, cmdtp-&gt;name, len) == 0) {
+            if (len == strlen(cmdtp-&gt;name))
+                return cmdtp;   /* full match */
+            cmdtp_temp = cmdtp; /* abbreviated command ? */
+            n_found++;
+        }
+    }
+    if (n_found == 1) {         /* exactly one match */
+        return cmdtp_temp;
+    }
+    return NULL;    /* not found or ambiguous command */
+}
+ 
+cmd_tbl_t *find_cmd(const char *cmd)
+{
+    cmd_tbl_t *start = ll_entry_start(cmd_tbl_t, cmd);
+    const int len = ll_entry_count(cmd_tbl_t, cmd);
+    return find_cmd_tbl(cmd, start, len);
+}
+```
+
+### cmd_call函数实际执行：
+
+```
+static int cmd_call(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+{
+    int result;
+    result = (cmdtp-&gt;cmd)(cmdtp, flag, argc, argv);      //do_bootz函数在此调用执行
+    if (result)
+        debug('Command failed, result=%d', result);
+    return result;
+}
+```
+
+## 4、进入到cmd_bootm函数中的do_bootz
+
+### do_bootz函数实际执行：
+
+```
+int do_bootz(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+{
+    int ret;
+    /* Consume 'bootz' 此时的argc是4，表示4个参数，同时argv[0]是bootz*/  
+    argc--; argv++;     //此时argc是3，还有3个参数，同时argv[0]是bootz引导内核的地址0x2080000
+    if (bootz_start(cmdtp, flag, argc, argv, &amp;images))          //images当前还只是个空的结构体实例
+        return 1;
+    /*
+     * We are doing the BOOTM_STATE_LOADOS state ourselves, so must
+     * disable interrupts ourselves
+     */
+    bootm_disable_interrupts();
+    images.os.os = IH_OS_LINUX;
+    ret = do_bootm_states(cmdtp, flag, argc, argv,
+                  BOOTM_STATE_OS_PREP | BOOTM_STATE_OS_FAKE_GO |
+                  BOOTM_STATE_OS_GO,
+                  &amp;images, 1);
+    return ret;
+}
+```
+
+### 1、bootz_start函数实际执行：
+
+```
+static int bootz_start(cmd_tbl_t *cmdtp, int flag, int argc,
+            char * const argv[], bootm_headers_t *images)
+{
+    int ret;
+    ulong zi_start, zi_end;
+    ret = do_bootm_states(cmdtp, flag, argc, argv, BOOTM_STATE_START,
+                  images, 1);
+    /* Setup Linux kernel zImage entry point */
+    if (!argc) {
+        images-&gt;ep = load_addr;
+        debug('*  kernel: default image load address = 0x%08lx\n',
+                load_addr);
+    } else {
+        images-&gt;ep = simple_strtoul(argv[0], NULL, 16);
+        debug('*  kernel: cmdline image address = 0x%08lx\n',
+            images-&gt;ep);
+    }
+    printf('images-ep %x\n', images-&gt;ep);
+    ret = bootz_setup(images-&gt;ep, &amp;zi_start, &amp;zi_end);
+    if (ret != 0)
+        return 1;
+    lmb_reserve(&amp;images-&gt;lmb, images-&gt;ep, zi_end - zi_start);
+    /*
+     * Handle the BOOTM_STATE_FINDOTHER state ourselves as we do not
+     * have a header that provide this informaiton.
+     */
+    if (bootm_find_ramdisk_fdt(flag, argc, argv))
+        return 1;
+    return 0;
+}
+```
+
+### do_bootm_states函数定义
+
+```
+ int do_bootm_states(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[],
+            int states, bootm_headers_t *images, int boot_progress)
+{
+    boot_os_fn *boot_fn;
+    ulong iflag = 0;
+    int ret = 0, need_boot_fn;
+    images-&gt;state |= states;
+    /*
+     * Work through the states and see how far we get. We stop on
+     * any error.
+     */
+    if (states &amp; BOOTM_STATE_START)                     //states=1,ret=0;BOOTM_STATE_START=(0x00000001);
+        ret = bootm_start(cmdtp, flag, argc, argv);     //在本函数中唯二需要正常执行的函数之一
+    if (!ret &amp;&amp; (states &amp; BOOTM_STATE_FINDOS))          //states=1,ret=0;BOOTM_STATE_FINDOS=(0x00000002);
+        ret = bootm_find_os(cmdtp, flag, argc, argv);  
+    if (!ret &amp;&amp; (states &amp; BOOTM_STATE_FINDOTHER)) {     //states=1,ret=0;BOOTM_STATE_FINDOTHER=(0x00000004);
+        ret = bootm_find_other(cmdtp, flag, argc, argv);
+        argc = 0;   /* consume the args */
+    }
+    /* From now on, we need the OS boot function */     //此时states=1,ret=0;
+    if (ret)
+        return ret;
+    boot_fn = bootm_os_get_boot_func(images-&gt;os.os); //在本函数中唯二需要正常执行的函数之一
+    need_boot_fn = states &amp; (BOOTM_STATE_OS_CMDLINE |
+            BOOTM_STATE_OS_BD_T | BOOTM_STATE_OS_PREP |
+            BOOTM_STATE_OS_FAKE_GO | BOOTM_STATE_OS_GO);        //这部分的宏0x00000 7E 0
+    /* Call various other states that are not generally used */ //此时boot_fn = NULL,need_boot_fn = 0x700
+    if (!ret &amp;&amp; (states &amp; BOOTM_STATE_OS_CMDLINE))              //states=1,ret=0;BOOTM_STATE_OS_CMDLINE=(0x00000040);
+        ret = boot_fn(BOOTM_STATE_OS_CMDLINE, argc, argv, images);
+    if (!ret &amp;&amp; (states &amp; BOOTM_STATE_OS_BD_T))                 //states=1,ret=0;BOOTM_STATE_OS_BD_T=(0x00000080);
+        ret = boot_fn(BOOTM_STATE_OS_BD_T, argc, argv, images);
+    if (!ret &amp;&amp; (states &amp; BOOTM_STATE_OS_PREP))                 //states=1,ret=0;BOOTM_STATE_OS_PREP=(0x00000100);
+        ret = boot_fn(BOOTM_STATE_OS_PREP, argc, argv, images);
+    /* Check for unsupported subcommand. */
+    if (ret) {
+        puts('subcommand not supported\n');
+        return ret;
+    }
+    /* Now run the OS! We hope this doesn't return */
+    if (!ret &amp;&amp; (states &amp; BOOTM_STATE_OS_GO))                   //ret =0;states =1;BOOTM_STATE_OS_GO=0x00000400;
+        ret = boot_selected_os(argc, argv, BOOTM_STATE_OS_GO,
+                images, boot_fn);
+    /* Deal with any fallout */
+err:
+    if (iflag)                                          //iflag= 0;ret =0;
+        enable_interrupts();
+    if (ret == BOOTM_ERR_UNIMPLEMENTED)
+        bootstage_error(BOOTSTAGE_ID_DECOMP_UNIMPL);
+    else if (ret == BOOTM_ERR_RESET)
+        do_reset(cmdtp, flag, argc, argv);
+    return ret;
+}
+```
+
+#### bootm_start函数定义实际执行：
+
+```
+static int bootm_start(cmd_tbl_t *cmdtp, int flag, int argc,
+               char * const argv[])
+{
+    memset((void *)&amp;images, 0, sizeof(images));
+    images.verify = getenv_yesno('verify');       //从环境变量中获取verify的值
+    boot_start_lmb(&amp;images);
+    bootstage_mark_name(BOOTSTAGE_ID_BOOTM_START, 'bootm_start');
+    images.state = BOOTM_STATE_START;
+    return 0;
+}
+```
+
+#### 1、getenv_yesno函数定义 实际执行：
+
+```
+char *getenv(const char *name)
+{
+    if (gd-&gt;flags &amp; GD_FLG_ENV_READY) { /* after import into hashtable */
+        ENTRY e, *ep;
+        WATCHDOG_RESET();
+        e.key   = name;                         //将需要查找的变量转为ENTRY结构体变量的键值
+        e.data  = NULL;
+        hsearch_r(e, FIND, &amp;ep, &amp;env_htab, 0);
+        return ep ? ep-&gt;data : NULL;
+    }
+    /* restricted capabilities before import */
+    if (getenv_f(name, (char *)(gd-&gt;env_buf), sizeof(gd-&gt;env_buf)) &gt; 0)
+        return (char *)(gd-&gt;env_buf);
+    return NULL;
+}
+int getenv_yesno(const char *var)
+{
+    char *s = getenv(var);
+    if (s == NULL)
+        return -1;
+    return (*s == '1' || *s == 'y' || *s == 'Y' || *s == 't' || *s == 'T') ?
+        1 : 0;
+}
+```
+
+getenv函数定义：
+
+本函数涉及到env变量的相关修改，实际解析暂未完成，仅仅初步完成hsearch_r函数的理解（），getenc_f函数的理解分析暂未完成因为好像很多地方均有相关的调用导致打印信息比较杂不好确定
+
+hsearch_r函数定义
+
+```
+int hsearch_r(ENTRY item, ACTION action, ENTRY ** retval,
+          struct hsearch_data *htab, int flag)
+{
+    unsigned int hval;
+    unsigned int count;
+    unsigned int len = strlen(item.key);
+    unsigned int idx;
+    unsigned int first_deleted = 0;
+    int ret;
+    /* Compute an value for the given string. Perhaps use a better method. */
+    hval = len;
+    count = len;
+    //hash表键值生成算法:
+    //将item.key---环境变量name中的字符移位并累加，然后模hash表项数，即为该环境变量在hash表项中的数组索引---hash表键值。</description><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/u-boot-qi-dong-liu-cheng-zhi-%20abortboot-wei-an-xia-ctrl%2Bu.html</guid><pubDate>Thu, 18 Sep 2025 17:20:55 +0000</pubDate></item><item><title>u-boot启动流程之 abortboot按下ctrl+u</title><link>https://nobody-ZWQ.github.io/post/u-boot-qi-dong-liu-cheng-zhi-%20abortboot-an-xia-ctrl%2Bu.html</link><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/u-boot-qi-dong-liu-cheng-zhi-%20abortboot-an-xia-ctrl%2Bu.html</guid><pubDate>Thu, 18 Sep 2025 17:07:21 +0000</pubDate></item><item><title>display基础知识</title><link>https://nobody-ZWQ.github.io/post/display-ji-chu-zhi-shi.html</link><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/display-ji-chu-zhi-shi.html</guid><pubDate>Thu, 18 Sep 2025 16:54:16 +0000</pubDate></item><item><title>USB枚举过程</title><link>https://nobody-ZWQ.github.io/post/USB-mei-ju-guo-cheng.html</link><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/USB-mei-ju-guo-cheng.html</guid><pubDate>Thu, 18 Sep 2025 13:42:22 +0000</pubDate></item></channel></rss>
