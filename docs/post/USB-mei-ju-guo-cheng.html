@@ -10,9 +10,15 @@
         let theme = localStorage.getItem("meek_theme") || "light";
         document.documentElement.setAttribute("data-color-mode", theme);
     </script>
-<meta name="description" content="">
+<meta name="description" content="## **USB 枚举的相对粗略的过程**
+
+### 1. **物理连接**
+- USB 设备插入主机（如 PC、嵌入式板卡）的 USB 端口。">
 <meta property="og:title" content="USB枚举过程">
-<meta property="og:description" content="">
+<meta property="og:description" content="## **USB 枚举的相对粗略的过程**
+
+### 1. **物理连接**
+- USB 设备插入主机（如 PC、嵌入式板卡）的 USB 端口。">
 <meta property="og:type" content="article">
 <meta property="og:url" content="https://nobody-ZWQ.github.io/post/USB-mei-ju-guo-cheng.html">
 <meta property="og:image" content="https://github.githubassets.com/favicons/favicon.svg">
@@ -73,7 +79,202 @@ body{box-sizing: border-box;min-width: 200px;max-width: 900px;margin: 20px auto;
 </div>
 </div>
     <div id="content">
-<div class="markdown-body" id="postBody"></div>
+<div class="markdown-body" id="postBody"><h2><strong>USB 枚举的相对粗略的过程</strong></h2>
+<h3>1. <strong>物理连接</strong></h3>
+<ul>
+<li>USB 设备插入主机（如 PC、嵌入式板卡）的 USB 端口。</li>
+<li>主机检测到物理电气信号变化（如 VBUS 电压上升、信号线拉高/拉低）。</li>
+</ul>
+<h3>2. <strong>总线复位（Bus Reset）</strong></h3>
+<ul>
+<li>主机向设备发送复位信号（通过信号线拉低 10ms 以上）。</li>
+<li>设备进入默认状态，准备响应主机请求。</li>
+</ul>
+<h3>3. <strong>设备检测与速度识别</strong></h3>
+<ul>
+<li>主机检测设备的连接速度（低速、全速、高速、超高速）。</li>
+<li>主机通过差分信号（D+/D-）判断设备类型，并选择合适的通信速率。</li>
+</ul>
+<h3>4. <strong>获取设备描述符（Device Descriptor）</strong></h3>
+<ul>
+<li>主机向设备发送请求（Get Descriptor），获取设备描述符（包括厂商 ID、产品 ID、设备类型等基础信息）。</li>
+<li>设备响应主机，返回设备描述符数据包。</li>
+</ul>
+<h3>5. <strong>分配地址（Set Address）</strong></h3>
+<ul>
+<li>主机分配一个唯一的 USB 地址给设备（默认地址为 0，分配后为 1~127）。</li>
+<li>设备接收并设置新地址用于后续通信。</li>
+</ul>
+<h3>6. <strong>获取配置描述符（Configuration Descriptor）</strong></h3>
+<ul>
+<li>主机再次请求设备，获取配置描述符（包括设备支持的配置、接口、端点等详细信息）。</li>
+<li>设备返回配置描述符数据包。</li>
+</ul>
+<h3>7. <strong>获取接口和端点描述符</strong></h3>
+<ul>
+<li>主机读取设备的接口、端点描述符（Interface Descriptor、Endpoint Descriptor），了解设备支持的功能和数据传输方式。</li>
+</ul>
+<h3>8. <strong>设置配置（Set Configuration）</strong></h3>
+<ul>
+<li>主机选择一个配置并发送 Set Configuration 请求，激活设备的相关功能。</li>
+<li>设备根据主机请求，切换到指定配置，准备正式工作。</li>
+</ul>
+<h3>9. <strong>驱动加载与应用初始化</strong></h3>
+<ul>
+<li>主机操作系统根据设备描述符信息，加载相应的驱动程序（如 USB 摄像头驱动、存储设备驱动等）。</li>
+<li>驱动完成初始化后，设备可以被上层应用访问和使用。</li>
+</ul>
+<h2><strong>USB控制器寄存器变化</strong></h2>
+<p><strong>USB枚举过程中寄存器变化</strong></p>
+<ul>
+<li>​<strong>寄存器变化</strong>​：
+<ul>
+<li>​<strong>PORTSC（端口状态控制寄存器）​</strong>​：
+<ul>
+<li><code class="notranslate">CCS</code>（Current Connect Status）位由0→1，触发控制器中断</li>
+<li><code class="notranslate">PED</code>（Port Enable/Disable）位由0→1，表示端口已使能</li>
+</ul>
+</li>
+<li>​<strong>PHY寄存器</strong>​：
+<ul>
+<li>检测到D+/D-线电压变化（如高速设备插入时D+拉高）<br>
+<strong>设备复位​</strong></li>
+</ul>
+</li>
+</ul>
+</li>
+<li>​<strong>控制器操作</strong>​：
+<ul>
+<li>向<code class="notranslate">PORTSC</code>寄存器写入<code class="notranslate">PR</code>（Port Reset）位=1，启动复位</li>
+<li>复位期间
+<ul>
+<li>portsc端口状态控制寄存器的<code class="notranslate">LS</code>（Line Status）位反映当前速度（00=全速，01=低速，10=高速）</li>
+<li>复位完成后 portsc（端口状态控制寄存器）自动清零<br>
+<strong>获取设备描述符​</strong></li>
+</ul>
+</li>
+</ul>
+</li>
+<li>​<strong>寄存器交互</strong>​：
+<ul>
+<li>​<strong>控制传输阶段</strong>​：
+<ul>
+<li><strong>setup事务中</strong>：</li>
+</ul>
+<ol>
+<li>​<strong>SETUP包</strong>​：
+<ul>
+<li>主机发送Setup Token包（PID=0x2D）</li>
+<li>控制器通过<code class="notranslate">ENDPTSETUPSTAT</code>端点setup状态寄存器确认Setup包接收</li>
+</ul>
+</li>
+<li>​<strong>DATA包</strong>​：
+<ul>
+<li>读取<code class="notranslate">EP0 FIFO</code>寄存器，获取设备描述符（长度默认18字节）</li>
+<li>写入<code class="notranslate">EP0 CSR</code>（控制状态寄存器）的<code class="notranslate">RXPKTRDY</code>（receive packet ready）位=1，通知主机数据就绪</li>
+</ul>
+</li>
+<li>​<strong>握手包</strong>​：
+<ul>
+<li>清除<code class="notranslate">EP0 CSR</code>（控制状态寄存器）的<code class="notranslate">RXPKTRDY</code>位</li>
+<li>向<code class="notranslate">EP0 FIFO</code>写入0字节数据，设置<code class="notranslate">TXPKTRDY</code>（transfer packet ready）位=1完成握手<br>
+<strong>地址分配​</strong></li>
+</ul>
+</li>
+</ol>
+</li>
+</ul>
+</li>
+<li>​<strong>寄存器操作</strong>​：
+<ul>
+<li>主机下发Set Address命令后：
+<ul>
+<li>将新地址写入<code class="notranslate">DEVICEADDR</code>寄存器</li>
+<li>设置<code class="notranslate">DEVICEADDR</code>的<code class="notranslate">LSEN</code>（Low Speed Enable）速度位适配设备速度</li>
+</ul>
+</li>
+<li>地址生效需等待下一个IN/OUT事务<br>
+<strong>配置设备​</strong></li>
+</ul>
+</li>
+<li>​<strong>寄存器配置</strong>​：
+<ul>
+<li>解析Set Configuration命令后：
+<ul>
+<li>写入<code class="notranslate">CONFIGURATION</code>寄存器选择配置值</li>
+<li>使能对应端点：
+<ul>
+<li>设置<code class="notranslate">ENDPTCTRL[EndPoint]</code>寄存器的<code class="notranslate">EP_EN</code>位=1</li>
+<li>配置传输类型（如Bulk/Interrupt）：
+<ul>
+<li><code class="notranslate">EP_TYPE</code>字段：00=控制，01=等时，10=Bulk，11=Interrupt</li>
+<li><code class="notranslate">EP_DIR</code>字段：0=OUT，1=IN</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p><strong>USB数据传输过程（以Bulk传输为例）​</strong><br>
+​<strong>OUT传输（主机→设备）​</strong>​</p>
+<ul>
+<li>​<strong>寄存器流程</strong>​：
+<ol>
+<li>​<strong>数据接收</strong>​：
+<ul>
+<li>主机发送OUT Token包后，数据通过D+/-线传输</li>
+<li>数据自动填充到从机的<code class="notranslate">EPn FIFO</code>寄存器</li>
+</ul>
+</li>
+<li>​<strong>通知应用层</strong>​：
+<ul>
+<li>设置<code class="notranslate">ENDPTSTAT</code>的<code class="notranslate">RX</code>位=1，触发中断</li>
+<li>应用层读取<code class="notranslate">EPn FIFO</code>数据并清除<code class="notranslate">RX</code>位</li>
+</ul>
+</li>
+<li>​<strong>ACK响应</strong>​：
+<ul>
+<li>从机自动发送ACK握手包（若数据无误）</li>
+<li>若数据错误：
+<ul>
+<li>设置<code class="notranslate">ENDPTSTAT</code>的<code class="notranslate">ERR</code>位=1</li>
+<li>从机发送NAK/NYET包时要求主机进行重传<br>
+<strong>IN传输（设备→主机）​</strong>​</li>
+</ul>
+</li>
+</ul>
+</li>
+</ol>
+</li>
+<li>​<strong>寄存器流程</strong>​：
+<ol>
+<li>​<strong>数据准备</strong>​：
+<ul>
+<li>将数据写入<code class="notranslate">EPn FIFO</code>寄存器（n为端点号）</li>
+<li>设置<code class="notranslate">ENDPTSTAT</code>寄存器的<code class="notranslate">TX</code>位=1，标记端点有数据待发送</li>
+</ul>
+</li>
+<li>​<strong>传输触发</strong>​：
+<ul>
+<li>主机发送IN Token包后：
+<ul>
+<li>控制器自动读取<code class="notranslate">EPn FIFO</code>数据并通过D+/-线发送</li>
+<li>传输完成后<code class="notranslate">ENDPTSTAT</code>的<code class="notranslate">TX</code>位自动清零</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>​<strong>握手信号</strong>​：
+<ul>
+<li>根据CRC校验结果更新<code class="notranslate">ENDPTSTAT</code>的<code class="notranslate">ERR</code>位（若有错误）</li>
+</ul>
+</li>
+</ol>
+</li>
+</ul></div>
 <div style="font-size:small;margin-top:8px;float:right;"></div>
 
 <button class="btn btn-block" type="button" onclick="openComments()" id="cmButton">评论</button>
@@ -132,11 +333,7 @@ console.log("\n %c Gmeek last https://github.com/Meekdai/Gmeek \n","padding:5px 
 <script>
 document.getElementById("pathHome").setAttribute("d",IconList["home"]);
 document.getElementById("pathIssue").setAttribute("d",IconList["github"]);
-cmButton=document.getElementById("cmButton");
-    span=document.createElement("span");
-    span.setAttribute("class","Counter");
-    span.innerHTML="1";
-    cmButton.appendChild(span);
+
 
 
 function openComments(){
