@@ -1,5 +1,5 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>Blog Title</title><link>https://nobody-ZWQ.github.io</link><description>Blog description</description><copyright>Blog Title</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://github.githubassets.com/favicons/favicon.svg</url><title>avatar</title><link>https://nobody-ZWQ.github.io</link></image><lastBuildDate>Fri, 19 Sep 2025 17:02:01 +0000</lastBuildDate><managingEditor>Blog Title</managingEditor><ttl>60</ttl><webMaster>Blog Title</webMaster><item><title>安全启动secure_boot</title><link>https://nobody-ZWQ.github.io/post/an-quan-qi-dong-secure_boot.html</link><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/an-quan-qi-dong-secure_boot.html</guid><pubDate>Thu, 18 Sep 2025 17:29:58 +0000</pubDate></item><item><title>ARM linux启动流程</title><link>https://nobody-ZWQ.github.io/post/ARM%20linux-qi-dong-liu-cheng.html</link><description># BootROM
+<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>Blog Title</title><link>https://nobody-ZWQ.github.io</link><description>Blog description</description><copyright>Blog Title</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://github.githubassets.com/favicons/favicon.svg</url><title>avatar</title><link>https://nobody-ZWQ.github.io</link></image><lastBuildDate>Fri, 19 Sep 2025 17:02:51 +0000</lastBuildDate><managingEditor>Blog Title</managingEditor><ttl>60</ttl><webMaster>Blog Title</webMaster><item><title>安全启动secure_boot</title><link>https://nobody-ZWQ.github.io/post/an-quan-qi-dong-secure_boot.html</link><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/an-quan-qi-dong-secure_boot.html</guid><pubDate>Thu, 18 Sep 2025 17:29:58 +0000</pubDate></item><item><title>ARM linux启动流程</title><link>https://nobody-ZWQ.github.io/post/ARM%20linux-qi-dong-liu-cheng.html</link><description># BootROM
 
 此程序出厂固化在soc内部rom中，soc上电首先执行，主要作用：
 
@@ -590,7 +590,278 @@ int hsearch_r(ENTRY item, ACTION action, ENTRY ** retval,
     hval = len;
     count = len;
     //hash表键值生成算法:
-    //将item.key---环境变量name中的字符移位并累加，然后模hash表项数，即为该环境变量在hash表项中的数组索引---hash表键值。</description><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/u-boot-qi-dong-liu-cheng-zhi-%20abortboot-wei-an-xia-ctrl%2Bu.html</guid><pubDate>Thu, 18 Sep 2025 17:20:55 +0000</pubDate></item><item><title>u-boot启动流程之 abortboot按下ctrl+u</title><link>https://nobody-ZWQ.github.io/post/u-boot-qi-dong-liu-cheng-zhi-%20abortboot-an-xia-ctrl%2Bu.html</link><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/u-boot-qi-dong-liu-cheng-zhi-%20abortboot-an-xia-ctrl%2Bu.html</guid><pubDate>Thu, 18 Sep 2025 17:07:21 +0000</pubDate></item><item><title>display基础知识</title><link>https://nobody-ZWQ.github.io/post/display-ji-chu-zhi-shi.html</link><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/display-ji-chu-zhi-shi.html</guid><pubDate>Thu, 18 Sep 2025 16:54:16 +0000</pubDate></item><item><title>USB枚举过程</title><link>https://nobody-ZWQ.github.io/post/USB-mei-ju-guo-cheng.html</link><description>## **USB 枚举的相对粗略的过程**
+    //将item.key---环境变量name中的字符移位并累加，然后模hash表项数，即为该环境变量在hash表项中的数组索引---hash表键值。</description><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/u-boot-qi-dong-liu-cheng-zhi-%20abortboot-wei-an-xia-ctrl%2Bu.html</guid><pubDate>Thu, 18 Sep 2025 17:20:55 +0000</pubDate></item><item><title>u-boot启动流程之 abortboot按下ctrl+u</title><link>https://nobody-ZWQ.github.io/post/u-boot-qi-dong-liu-cheng-zhi-%20abortboot-an-xia-ctrl%2Bu.html</link><description>### **代码调用跟踪**
+```
+u-boot.lds:(arch/arm/cpu/u-boot.lds)
+    |--&gt;_start:(arch/arm/lib/vectors.S)
+        |--&gt;reset(arch/arm/cpu/armv7/start.S)   
+            |--&gt;save_boot_params(arch/arm/cpu/armv7/start.S)/*将引导参数保存到内存中*/
+                |--&gt;save_boot_params_ret(arch/arm/cpu/armv7/start.S)
+                    |--&gt;cpu_init_cp15(arch/arm/cpu/armv7/start.S)/*初始化*/
+                    |--&gt;cpu_init_crit(arch/arm/cpu/armv7/start.S)
+                        |--&gt;lowlevel_init(arch/arm/cpu/armv7/lowlevel_init.S)
+                    |--&gt;_main(arch/arm/lib/crt0.S)
+                        |--&gt;board_init_f_alloc_reserve(common/init/board_init.c)/*为u-boot的gd结构体分配空间*/
+                        |--&gt;board_init_f_init_reserve(common/init/board_init.c)    /*将gd结构体清零*/
+                        |--&gt;board_init_f(common/board_f.c)
+                            |--&gt;initcall_run_list(include/initcall.h)    /*初始化序列函数*/
+                                |--&gt;init_sequence_f[](common/board_f.c)    /* 初始化序列函数数组 */
+                                    |--&gt;board_early_init_f(board/freescale/mx6ull_toto/mx6ull_toto.c)/*初始化串口的IO配置*/
+                                    |--&gt;timer_init(arch/arm/imx-common/timer.c)    /*初始化内核定时器，为uboot提供时钟节拍*/
+                                    |--&gt;init_baud_rate(common/board_f.c)        /*初始化波特率*/
+                                    |--&gt;serial_init(drivers/serial/serial.c)    /*初始化串口通信设置*/
+                                    |--&gt;console_init_f(common/console.c)        /*初始化控制台*/
+                                    |--&gt;...
+                        |--&gt;relocate_code(arch/arm/lib/relocate.S)    /*主要完成镜像拷贝和重定位*/
+                        |--&gt;relocate_vectors(arch/arm/lib/relocate.S)/*重定位向量表*/
+                        |--&gt;board_init_r(common/board_r.c)/*板级初始化*/
+                            |--&gt;initcall_run_list(include/initcall.h)/*初始化序列函数*/
+                                |--&gt;init_sequence_r[](common/board_f.c)/*序列函数*/
+                                    |--&gt;initr_reloc(common/board_r.c)    /*设置 gd-&gt;flags,标记重定位完成*/
+                                    |--&gt;serial_initialize(drivers/serial/serial-uclass.c)/*初始化串口*/
+                                        |--&gt;serial_init(drivers/serial/serial-uclass.c)     /*初始化串口*/
+                                    |--&gt;initr_mmc(common/board_r.c)                         /*初始化emmc*/
+                                        |--&gt;mmc_initialize(drivers/mmc/mmc.c)
+                                            |--&gt;mmc_do_preinit(drivers/mmc/mmc.c)
+                                                |--&gt;mmc_start_init(drivers/mmc/mmc.c)
+                                    |--&gt;console_init_r(common/console.c)                /*初始化控制台*/
+                                    |--&gt;interrupt_init(arch/arm/lib/interrupts.c)        /*初始化中断*/
+                                    |--&gt;initr_net(common/board_r.c)                        /*初始化网络设备*/
+                                        |--&gt;eth_initialize(net/eth-uclass.c)
+                                            |--&gt;eth_common_init(net/eth_common.c)
+                                                |--&gt;phy_init(drivers/net/phy/phy.c)
+                                            |--&gt;uclass_first_device_check(drivers/core/uclass.c)
+                                                |--&gt;uclass_find_first_device(drivers/core/uclass.c)
+                                                |--&gt;device_probe(drivers/core/device.c)
+                                                    |--&gt;device_of_to_plat(drivers/core/device.c)
+                                                        |--&gt;drv-&gt;of_to_plat
+                                                            |--&gt;fecmxc_of_to_plat(drivers/net/fec_mxc.c)/*解析设备树信息*/
+                                                    |--&gt;device_get_uclass_id(drivers/core/device.c)
+                                                    |--&gt;uclass_pre_probe_device(drivers/core/uclass.c)
+                                                    |--&gt;drv-&gt;probe(dev)
+                                                        /*drivers/net/fec_mxc.c*/
+                                                        U_BOOT_DRIVER(fecmxc_gem) = {
+                                                            .name    = 'fecmxc',
+                                                            .id    = UCLASS_ETH,
+                                                            .of_match = fecmxc_ids,
+                                                            .of_to_plat = fecmxc_of_to_plat,
+                                                            .probe    = fecmxc_probe,
+                                                            .remove    = fecmxc_remove,
+                                                            .ops    = &amp;fecmxc_ops,
+                                                            .priv_auto    = sizeof(struct fec_priv),
+                                                            .plat_auto    = sizeof(struct eth_pdata),
+                                                        };
+                                                        |--&gt;fecmxc_probe(drivers/net/fec_mxc.c)/*探测和初始化*/
+                                                            |--&gt;fec_get_miibus(drivers/net/fec_mxc.c)
+                                                                |--&gt;mdio_alloc(drivers/net/fec_mxc.c)
+                                                                |--&gt;bus-&gt;read = fec_phy_read;
+                                                                |--&gt;bus-&gt;write = fec_phy_write;
+                                                                |--&gt;mdio_register(common/miiphyutil.c)
+                                                                |--&gt;fec_mii_setspeed(drivers/net/fec_mxc.c)
+                                                            |--&gt;fec_phy_init(drivers/net/fec_mxc.c)
+                                                                |--&gt;device_get_phy_addr(drivers/net/fec_mxc.c)
+                                                                |--&gt;phy_connect(drivers/net/phy/phy.c)
+                                                                    |--&gt;phy_find_by_mask(drivers/net/phy/phy.c)
+                                                                        |--&gt;bus-&gt;reset(bus)
+                                                                        |--&gt;get_phy_device_by_mask(drivers/net/phy/phy.c)
+                                                                            |--&gt;create_phy_by_mask(drivers/net/phy/phy.c)
+                                                                                |--&gt;phy_device_create(drivers/net/phy/phy.c)
+                                                                                    |--&gt;phy_probe(drivers/net/phy/phy.c)
+                                                                    |--&gt;phy_connect_dev(drivers/net/phy/phy.c)
+                                                                        |--&gt;phy_reset(drivers/net/phy/phy.c)
+                                                                |--&gt;phy_config(drivers/net/phy/phy.c)
+                                                                    |--&gt;board_phy_config(drivers/net/phy/phy.c)
+                                                                        |--&gt;phydev-&gt;drv-&gt;config(phydev)
+                                                                            /*drivers/net/phy/smsc.c*/
+                                                                            static struct phy_driver lan8710_driver = {
+                                                                                .name = 'SMSC LAN8710/LAN8720',
+                                                                                .uid = 0x0007c0f0,
+                                                                                .mask = 0xffff0,
+                                                                                .features = PHY_BASIC_FEATURES,
+                                                                                .config = &amp;genphy_config_aneg,
+                                                                                .startup = &amp;genphy_startup,
+                                                                                .shutdown = &amp;genphy_shutdown,
+                                                                            };
+                                                                            |--&gt;genphy_config_aneg(drivers/net/phy/phy.c)
+                                                                                |--&gt;phy_reset(需要手动调用)(drivers/net/phy/phy.c)
+                                                                                |--&gt;genphy_setup_forced(drivers/net/phy/phy.c)
+                                                                                |--&gt;genphy_config_advert(drivers/net/phy/phy.c)
+                                                                                |--&gt;genphy_restart_aneg(drivers/net/phy/phy.c)
+                                                    |--&gt;uclass_post_probe_device(drivers/core/uclass.c)
+                                                        |--&gt;uc_drv-&gt;post_probe(drivers/core/uclass.c)
+                                                            /*net/eth-uclass.c*/
+                                                            UCLASS_DRIVER(ethernet) = {
+                                                                .name        = 'ethernet',
+                                                                .id        = UCLASS_ETH,
+                                                                .post_bind    = eth_post_bind,
+                                                                .pre_unbind    = eth_pre_unbind,
+                                                                .post_probe    = eth_post_probe,
+                                                                .pre_remove    = eth_pre_remove,
+                                                                .priv_auto    = sizeof(struct eth_uclass_priv),
+                                                                .per_device_auto    = sizeof(struct eth_device_priv),
+                                                                .flags        = DM_UC_FLAG_SEQ_ALIAS,
+                                                            };
+                                                            |--&gt;eth_post_probe(net/eth-uclass.c)
+                                                                |--&gt;eth_write_hwaddr(drivers/core/uclass.c)
+                                    |--&gt;...
+                                    |--&gt;run_main_loop(common/board_r.c)/*主循环，处理命令*/
+                                        |--&gt;main_loop(common/main.c)
+                                            |--&gt;bootdelay_process(common/autoboot.c)    /*读取环境变量bootdelay和bootcmd的内容*/
+                                            |--&gt;autoboot_command(common/autoboot.c)        /*倒计时按下执行，没有操作执行bootcmd的参数*/
+                                                |--&gt;abortboot(common/autoboot.c)
+                                                    |--&gt;printf('Hit any key to stop autoboot: %2d ', bootdelay);
+                                                    /*到这里就是我们看到uboot延时3s启动内核的地方*/
+                                            |--&gt;cli_loop(common/cli.c)    /*倒计时按下space键,执行用户输入命令*/
+```
+
+### 编译跟踪：
+
+./zoo 
+
+./make_uboot_imgtr_bidir.sh
+
+./config.mk：CPU := $(CONFIG_SYS_CPU:'%'=%)
+
+.config：CONFIG_SYS_CPU='armv7'
+
+关于在armv7的.S和.c文件中遇到的宏定义目前初步判断其定义位置在：
+
+u-boot/configs/zynq-hkvs_imgtr_deconfig
+
+zynq_hkvs_imgtr_defconfig
+
+和.config中还有
+
+（待定，待更新）
+
+### 1、_start函数详解
+
+网上查阅资料了解到u-boot.lds中的_start作为启动的第一语句，继续跟_start执行的语句，其定义在vectors.S
+
+```
+_start:
+#ifdef CONFIG_SYS_DV_NOR_BOOT_CFG
+    .word   CONFIG_SYS_DV_NOR_BOOT_CFG
+#endif
+    b   reset
+    ldr pc, _undefined_instruction
+    ldr pc, _software_interrupt
+    ldr pc, _prefetch_abort
+    ldr pc, _data_abort
+    ldr pc, _not_used
+    ldr pc, _irq
+    ldr pc, _fiq
+/*
+ *************************************************************************
+ *
+ * Indirect vectors table
+ *
+ * Symbols referenced here must be defined somewhere else
+ *
+ *************************************************************************
+ */
+    .globl  _undefined_instruction
+    .globl  _software_interrupt
+    .globl  _prefetch_abort
+    .globl  _data_abort
+    .globl  _not_used
+    .globl  _irq
+    .globl  _fiq
+_undefined_instruction: .word undefined_instruction
+_software_interrupt:    .word software_interrupt
+_prefetch_abort:    .word prefetch_abort
+_data_abort:        .word data_abort
+_not_used:      .word not_used
+_irq:           .word irq
+_fiq:           .word fiq
+    .balignl 16,0xdeadbeef
+```
+
+中断向量表中，先进行相对跳转到reset
+
+而reset函数定义在arch/arm/cpu/armv7/start.S
+
+### 2、reset函数详解
+
+```
+#include &lt;asm-offsets.h&gt;
+#include &lt;config.h&gt;
+#include &lt;asm/system.h&gt;
+#include &lt;linux/linkage.h&gt;
+/*************************************************************************
+ *
+ * Startup Code (reset vector)
+ *
+ * do important init only if we don't start from memory!
+ * setup Memory and board specific bits prior to relocation.
+ * relocate armboot to ram
+ * setup stack
+ *
+ *************************************************************************/
+    .globl  reset
+    .globl  save_boot_params_ret
+reset:
+    /* Allow the board to save important registers */
+    b   save_boot_params
+```
+
+在reset中执行跳转，跳转到save_boot_params
+
+```
+ENTRY(save_boot_params)
+    b   save_boot_params_ret        @ back to my caller
+ENDPROC(save_boot_params)
+```
+
+在save_boot_params中执行跳转，跳转到save_boot_params_ret
+
+```
+save_boot_params_ret:
+    /*
+     * disable interrupts (FIQ and IRQ), also set the cpu to SVC32 mode,
+     * except if in HYP mode already
+     */
+    mrs r0, cpsr
+    and r1, r0, #0x1f       @ mask mode bits
+    teq r1, #0x1a           @ test for HYP mode
+    bicne r0, r0, #0x1f     @ clear all mode bits
+    orrne r0, r0, #0x13     @ set SVC mode
+    orr r0, r0, #0xc0       @ disable FIQ and IRQ
+    msr cpsr,r0
+/*
+ * Setup vector:
+ * (OMAP4 spl TEXT_BASE is not 32 byte aligned.
+ * Continue to use ROM code vector only in OMAP4 spl)
+ */
+#if !(defined(CONFIG_OMAP44XX) &amp;&amp; defined(CONFIG_SPL_BUILD))
+    /* Set V=0 in CP15 SCTLR register - for VBAR to point to vector */
+    mrc p15, 0, r0, c1, c0, 0   @ Read CP15 SCTLR Register
+    bic r0, #CR_V               @ V = 0
+    mcr p15, 0, r0, c1, c0, 0   @ Write CP15 SCTLR Register
+    /* Set vector address in CP15 VBAR register */
+    ldr r0, =_start
+    mcr p15, 0, r0, c12, c0, 0  @Set VBAR
+#endif
+    /* the mask ROM code should have PLL and others stable */
+#ifndef CONFIG_SKIP_LOWLEVEL_INIT
+    bl  cpu_init_cp15
+    bl  cpu_init_crit
+#endif
+    bl  _main 
+```
+
+在save_boot_params_ret中执行指令：
+
+指令分析：
+
+![20190318104323545](../image/20190318104323545.png)
+
+| 指令  | 使用方式                 | 作用                                                         |
+| :---- | :----------------------- | :----------------------------------------------------------- |
+| mrs   | `mrs r0, cpsr`           | 读取特殊寄存器cpsr的数据，并将数据写入到r0寄存器中           |
+| and   | `and r1, r0, r2`         | 将r2和r0寄存器的数据相加并将和存到r1寄存器中                 |
+| teq   | `teq r1, r2`             | 测试r1寄存器和r2寄存器的数据是否相等                         |
+| bic   | bic r1, r1 , r2          | 根据r2中数据哪个位为1，清除r1对应的位，然后将结果存入r1。</description><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/u-boot-qi-dong-liu-cheng-zhi-%20abortboot-an-xia-ctrl%2Bu.html</guid><pubDate>Thu, 18 Sep 2025 17:07:21 +0000</pubDate></item><item><title>display基础知识</title><link>https://nobody-ZWQ.github.io/post/display-ji-chu-zhi-shi.html</link><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/display-ji-chu-zhi-shi.html</guid><pubDate>Thu, 18 Sep 2025 16:54:16 +0000</pubDate></item><item><title>USB枚举过程</title><link>https://nobody-ZWQ.github.io/post/USB-mei-ju-guo-cheng.html</link><description>## **USB 枚举的相对粗略的过程**
 
 ### 1. **物理连接**
 - USB 设备插入主机（如 PC、嵌入式板卡）的 USB 端口。</description><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/USB-mei-ju-guo-cheng.html</guid><pubDate>Thu, 18 Sep 2025 13:42:22 +0000</pubDate></item></channel></rss>
