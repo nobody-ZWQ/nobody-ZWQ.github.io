@@ -10,13 +10,69 @@
         let theme = localStorage.getItem("meek_theme") || "light";
         document.documentElement.setAttribute("data-color-mode", theme);
     </script>
-<meta name="description" content="">
-<meta property="og:title" content="u-boot启动流程之 abortboot按下ctrl+u">
-<meta property="og:description" content="">
+<meta name="description" content="# BootROM
+
+此程序出厂固化在soc内部rom中，soc上电首先执行，主要作用：
+
+1. 初始化时钟、SRAM
+2. 根据寄存器选择启动介质
+3. 从启动介质搬运loader到SRAM执行
+
+# Loader
+
+由于SRAM一般较小，所以loader体积较小，主要完成以下功能：
+
+1. 初始化DRAM
+2. 搬运U-Boot代码到DRAM执行
+
+# U-Boot
+
+U-Boot启动以重定位（relocate）操作分成两个阶段
+
+1. 重定位前（board_init_f）：只做必要的初始化，soc、时钟、DRAM、串口
+2. 重定位（relocate）：将自身搬移到DRAM的末尾地址执行
+3. 重定位后（board_init_r）：初始化需要的外设（存储、网络等），命令行系统，引导内核
+
+# Kernel
+
+1. 解析命令行参数
+2. initcall各类驱动初始化
+3. 挂载根文件系统
+4. 启动init进程，进入用户空间。">
+<meta property="og:title" content="ARM linux启动流程">
+<meta property="og:description" content="# BootROM
+
+此程序出厂固化在soc内部rom中，soc上电首先执行，主要作用：
+
+1. 初始化时钟、SRAM
+2. 根据寄存器选择启动介质
+3. 从启动介质搬运loader到SRAM执行
+
+# Loader
+
+由于SRAM一般较小，所以loader体积较小，主要完成以下功能：
+
+1. 初始化DRAM
+2. 搬运U-Boot代码到DRAM执行
+
+# U-Boot
+
+U-Boot启动以重定位（relocate）操作分成两个阶段
+
+1. 重定位前（board_init_f）：只做必要的初始化，soc、时钟、DRAM、串口
+2. 重定位（relocate）：将自身搬移到DRAM的末尾地址执行
+3. 重定位后（board_init_r）：初始化需要的外设（存储、网络等），命令行系统，引导内核
+
+# Kernel
+
+1. 解析命令行参数
+2. initcall各类驱动初始化
+3. 挂载根文件系统
+4. 启动init进程，进入用户空间。">
 <meta property="og:type" content="article">
-<meta property="og:url" content="https://nobody-ZWQ.github.io/post/u-boot-qi-dong-liu-cheng-zhi-%20abortboot-an-xia-ctrl%2Bu.html">
+<meta property="og:url" content="https://nobody-ZWQ.github.io/post/ARM%20linux-qi-dong-liu-cheng.html">
 <meta property="og:image" content="https://github.githubassets.com/favicons/favicon.svg">
-<title>u-boot启动流程之 abortboot按下ctrl+u</title>
+<title>ARM linux启动流程</title>
 
 
 
@@ -49,7 +105,7 @@ body{box-sizing: border-box;min-width: 200px;max-width: 900px;margin: 20px auto;
 
 <body>
     <div id="header">
-<h1 class="postTitle">u-boot启动流程之 abortboot按下ctrl+u</h1>
+<h1 class="postTitle">ARM linux启动流程</h1>
 <div class="title-right">
     <a href="https://nobody-ZWQ.github.io" id="buttonHome" class="btn btn-invisible circle" title="首页">
         <svg class="octicon" width="16" height="16">
@@ -57,7 +113,7 @@ body{box-sizing: border-box;min-width: 200px;max-width: 900px;margin: 20px auto;
         </svg>
     </a>
     
-    <a href="https://github.com/nobody-ZWQ/nobody-ZWQ.github.io/issues/3" target="_blank" class="btn btn-invisible circle" title="Issue">
+    <a href="https://github.com/nobody-ZWQ/nobody-ZWQ.github.io/issues/5" target="_blank" class="btn btn-invisible circle" title="Issue">
         <svg class="octicon" width="16" height="16">
             <path id="pathIssue" fill-rule="evenodd"></path>
         </svg>
@@ -73,7 +129,33 @@ body{box-sizing: border-box;min-width: 200px;max-width: 900px;margin: 20px auto;
 </div>
 </div>
     <div id="content">
-<div class="markdown-body" id="postBody"></div>
+<div class="markdown-body" id="postBody"><h1>BootROM</h1>
+<p>此程序出厂固化在soc内部rom中，soc上电首先执行，主要作用：</p>
+<ol>
+<li>初始化时钟、SRAM</li>
+<li>根据寄存器选择启动介质</li>
+<li>从启动介质搬运loader到SRAM执行</li>
+</ol>
+<h1>Loader</h1>
+<p>由于SRAM一般较小，所以loader体积较小，主要完成以下功能：</p>
+<ol>
+<li>初始化DRAM</li>
+<li>搬运U-Boot代码到DRAM执行</li>
+</ol>
+<h1>U-Boot</h1>
+<p>U-Boot启动以重定位（relocate）操作分成两个阶段</p>
+<ol>
+<li>重定位前（board_init_f）：只做必要的初始化，soc、时钟、DRAM、串口</li>
+<li>重定位（relocate）：将自身搬移到DRAM的末尾地址执行</li>
+<li>重定位后（board_init_r）：初始化需要的外设（存储、网络等），命令行系统，引导内核</li>
+</ol>
+<h1>Kernel</h1>
+<ol>
+<li>解析命令行参数</li>
+<li>initcall各类驱动初始化</li>
+<li>挂载根文件系统</li>
+<li>启动init进程，进入用户空间</li>
+</ol></div>
 <div style="font-size:small;margin-top:8px;float:right;"></div>
 
 <button class="btn btn-block" type="button" onclick="openComments()" id="cmButton">评论</button>
@@ -132,11 +214,7 @@ console.log("\n %c Gmeek last https://github.com/Meekdai/Gmeek \n","padding:5px 
 <script>
 document.getElementById("pathHome").setAttribute("d",IconList["home"]);
 document.getElementById("pathIssue").setAttribute("d",IconList["github"]);
-cmButton=document.getElementById("cmButton");
-    span=document.createElement("span");
-    span.setAttribute("class","Counter");
-    span.innerHTML="1";
-    cmButton.appendChild(span);
+
 
 
 function openComments(){
