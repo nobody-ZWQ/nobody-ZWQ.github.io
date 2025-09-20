@@ -1,5 +1,14 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>Blog Title</title><link>https://nobody-ZWQ.github.io</link><description>Blog description</description><copyright>Blog Title</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://github.githubassets.com/favicons/favicon.svg</url><title>avatar</title><link>https://nobody-ZWQ.github.io</link></image><lastBuildDate>Fri, 19 Sep 2025 17:02:51 +0000</lastBuildDate><managingEditor>Blog Title</managingEditor><ttl>60</ttl><webMaster>Blog Title</webMaster><item><title>安全启动secure_boot</title><link>https://nobody-ZWQ.github.io/post/an-quan-qi-dong-secure_boot.html</link><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/an-quan-qi-dong-secure_boot.html</guid><pubDate>Thu, 18 Sep 2025 17:29:58 +0000</pubDate></item><item><title>ARM linux启动流程</title><link>https://nobody-ZWQ.github.io/post/ARM%20linux-qi-dong-liu-cheng.html</link><description># BootROM
+<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>Blog Title</title><link>https://nobody-ZWQ.github.io</link><description>Blog description</description><copyright>Blog Title</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://github.githubassets.com/favicons/favicon.svg</url><title>avatar</title><link>https://nobody-ZWQ.github.io</link></image><lastBuildDate>Sat, 20 Sep 2025 13:45:45 +0000</lastBuildDate><managingEditor>Blog Title</managingEditor><ttl>60</ttl><webMaster>Blog Title</webMaster><item><title>面经总结</title><link>https://nobody-ZWQ.github.io/post/mian-jing-zong-jie.html</link><description>**linux system部分**（技术深度）
+
+1、中断下半部有哪些方式实现
+2、内核进程和用户进程的区别
+3、函数多层嵌套调用情况下其参数是如何传递的；编译的优化等级会对这些造成什么样的影响
+4、CPU中断的执行过程
+
+**总线部分**（基础夯实）
+
+1、I2C 信号的基本类型及识别；i2c设备如何挂到i2c线上去的，i2c通信所用到的接口有哪些（内核下），通信异常一般有些情况，一般往哪些方向去考虑。</description><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/mian-jing-zong-jie.html</guid><pubDate>Sat, 20 Sep 2025 13:45:15 +0000</pubDate></item><item><title>安全启动secure_boot</title><link>https://nobody-ZWQ.github.io/post/an-quan-qi-dong-secure_boot.html</link><guid isPermaLink="true">https://nobody-ZWQ.github.io/post/an-quan-qi-dong-secure_boot.html</guid><pubDate>Thu, 18 Sep 2025 17:29:58 +0000</pubDate></item><item><title>ARM linux启动流程</title><link>https://nobody-ZWQ.github.io/post/ARM%20linux-qi-dong-liu-cheng.html</link><description># BootROM
 
 此程序出厂固化在soc内部rom中，soc上电首先执行，主要作用：
 
